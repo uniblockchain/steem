@@ -1,10 +1,12 @@
+
+#include <steem/chain/steem_fwd.hpp>
+
 #include <steem/plugins/tags/tags_plugin.hpp>
 
 #include <steem/protocol/config.hpp>
 
 #include <steem/chain/database.hpp>
 #include <steem/chain/index.hpp>
-#include <steem/chain/operation_notification.hpp>
 #include <steem/chain/account_object.hpp>
 #include <steem/chain/comment_object.hpp>
 
@@ -56,14 +58,14 @@ class tags_plugin_impl
       tags_plugin_impl();
       virtual ~tags_plugin_impl();
 
-      void pre_operation( const operation_notification& note );
-      void on_operation( const operation_notification& note );
+      void on_pre_apply_operation( const operation_notification& note );
+      void on_post_apply_operation( const operation_notification& note );
 
       chain::database&     _db;
       fc::time_point_sec   _promoted_start_time;
       bool                 _started = false;
-      boost::signals2::connection   pre_apply_connection;
-      boost::signals2::connection   post_apply_connection;
+      boost::signals2::connection   _pre_apply_operation_conn;
+      boost::signals2::connection   _post_apply_operation_conn;
       boost::signals2::connection   on_sync_connection;
 
       void remove_stats( const tag_object& tag, const tag_stats_object& stats )const;
@@ -117,9 +119,6 @@ void tags_plugin_impl::add_stats( const tag_object& tag, const tag_stats_object&
 
 void tags_plugin_impl::remove_tag( const tag_object& tag )const
 {
-   /// TODO: update tag stats object
-   _db.remove(tag);
-
    const auto& idx = _db.get_index<author_tag_stats_index>().indices().get<by_author_tag_posts>();
    auto itr = idx.lower_bound( boost::make_tuple(tag.author,tag.tag) );
    if( itr != idx.end() && itr->author == tag.author && itr->tag == tag.tag )
@@ -129,6 +128,9 @@ void tags_plugin_impl::remove_tag( const tag_object& tag )const
          stats.total_posts--;
       });
    }
+
+   /// TODO: update tag stats object
+   _db.remove(tag);
 }
 
 const tag_stats_object& tags_plugin_impl::get_stats( const string& tag )const
@@ -451,7 +453,7 @@ struct operation_visitor
    void operator()( Op&& )const{} /// ignore all other ops
 };
 
-void tags_plugin_impl::pre_operation( const operation_notification& note )
+void tags_plugin_impl::on_pre_apply_operation( const operation_notification& note )
 {
    try
    {
@@ -468,7 +470,7 @@ void tags_plugin_impl::pre_operation( const operation_notification& note )
    }
 }
 
-void tags_plugin_impl::on_operation( const operation_notification& note )
+void tags_plugin_impl::on_post_apply_operation( const operation_notification& note )
 {
    try
    {
@@ -497,7 +499,10 @@ void tags_plugin::set_program_options(
 {
    cfg.add_options()
       ("tags-start-promoted", boost::program_options::value< uint32_t >()->default_value( 0 ), "Block time (in epoch seconds) when to start calculating promoted content. Should be 1 week prior to current time." )
-      ("tags-skip-startup-update", bpo::bool_switch()->default_value(false), "Skip updating tags on startup. Can safely be skipped when starting a previously running node. Should not be skipped when reindexing.")
+      ("tags-skip-startup-update", bpo::value<bool>()->default_value(false), "Skip updating tags on startup. Can safely be skipped when starting a previously running node. Should not be skipped when reindexing.")
+      ;
+   cli.add_options()
+      ("tags-skip-startup-update", bpo::bool_switch()->default_value(false), "Skip updating tags on startup. Can safely be skipped when starting a previously running node. Should not be skipped when reindexing." )
       ;
 }
 
@@ -506,8 +511,8 @@ void tags_plugin::plugin_initialize(const boost::program_options::variables_map&
    ilog("Intializing tags plugin" );
    my = std::make_unique< detail::tags_plugin_impl >();
 
-   my->pre_apply_connection = my->_db.pre_apply_operation.connect( 0, [&]( const operation_notification& note ){ my->pre_operation( note ); } );
-   my->post_apply_connection = my->_db.post_apply_operation.connect( 0, [&]( const operation_notification& note ){ my->on_operation(  note ); } );
+   my->_pre_apply_operation_conn = my->_db.add_pre_apply_operation_handler( [&]( const operation_notification& note ){ my->on_pre_apply_operation( note ); }, *this, 0 );
+   my->_post_apply_operation_conn = my->_db.add_post_apply_operation_handler( [&]( const operation_notification& note ){ my->on_post_apply_operation( note ); }, *this, 0 );
 
    if( !options.at( "tags-skip-startup-update" ).as< bool >() )
    {
@@ -530,11 +535,16 @@ void tags_plugin::plugin_initialize(const boost::program_options::variables_map&
    add_plugin_index< tag_stats_index         >( my->_db );
    add_plugin_index< author_tag_stats_index  >( my->_db );
 
+   fc::mutable_variant_object state_opts;
+
    if( options.count( "tags-start-promoted" ) )
    {
       my->_promoted_start_time = fc::time_point_sec( options[ "tags-start-promoted" ].as< uint32_t >() );
+      state_opts["tags-start-promoted"] = my->_promoted_start_time;
       idump( (my->_promoted_start_time) );
    }
+
+   appbase::app().get_plugin< chain::chain_plugin >().report_state_options( name(), state_opts );
 }
 
 
@@ -545,8 +555,8 @@ void tags_plugin::plugin_startup()
 
    void tags_plugin::plugin_shutdown()
 {
-   chain::util::disconnect_signal( my->pre_apply_connection );
-   chain::util::disconnect_signal( my->post_apply_connection );
+   chain::util::disconnect_signal( my->_pre_apply_operation_conn );
+   chain::util::disconnect_signal( my->_post_apply_operation_conn );
 }
 
 } } } /// steem::plugins::tags

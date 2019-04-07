@@ -1,11 +1,12 @@
 #include <steem/plugins/witness/witness_plugin.hpp>
-#include <steem/plugins/witness/witness_objects.hpp>
+#include <steem/plugins/witness/witness_plugin_objects.hpp>
 
 #include <steem/chain/database_exceptions.hpp>
 #include <steem/chain/account_object.hpp>
 #include <steem/chain/comment_object.hpp>
 #include <steem/chain/witness_objects.hpp>
 #include <steem/chain/index.hpp>
+#include <steem/chain/util/impacted.hpp>
 
 #include <steem/utilities/key_conversion.hpp>
 #include <steem/utilities/plugin_utilities.hpp>
@@ -21,11 +22,14 @@
 
 
 #define DISTANCE_CALC_PRECISION (10000)
+#define BLOCK_PRODUCING_LAG_TIME (750)
+#define BLOCK_PRODUCTION_LOOP_SLEEP_TIME (200000)
 
 
 namespace steem { namespace plugins { namespace witness {
 
-using chain::plugin_exception;
+using namespace steem::chain;
+
 using std::string;
 using std::vector;
 
@@ -52,30 +56,34 @@ namespace detail {
    public:
       witness_plugin_impl( boost::asio::io_service& io ) :
          _timer(io),
-         _db( appbase::app().get_plugin< steem::plugins::chain::chain_plugin >().db() ) {}
+         _chain_plugin( appbase::app().get_plugin< steem::plugins::chain::chain_plugin >() ),
+         _db( appbase::app().get_plugin< steem::plugins::chain::chain_plugin >().db() ),
+         _block_producer( std::make_shared< witness::block_producer >( _db ) )
+         {}
 
-      void pre_transaction( const steem::protocol::signed_transaction& trx );
-      void pre_operation( const chain::operation_notification& note );
-      void on_block( const signed_block& b );
-
-      void update_account_bandwidth( const chain::account_object& a, uint32_t trx_size, const bandwidth_type type );
+      void on_post_apply_block( const chain::block_notification& note );
+      void on_pre_apply_operation( const chain::operation_notification& note );
+      void on_post_apply_operation( const chain::operation_notification& note );
 
       void schedule_production_loop();
       block_production_condition::block_production_condition_enum block_production_loop();
       block_production_condition::block_production_condition_enum maybe_produce_block(fc::mutable_variant_object& capture);
 
-      bool _production_enabled = false;
-      uint32_t _required_witness_participation = 33 * STEEM_1_PERCENT;
-      uint32_t _production_skip_flags = chain::database::skip_nothing;
+      bool     _production_enabled              = false;
+      uint32_t _required_witness_participation  = 33 * STEEM_1_PERCENT;
+      uint32_t _production_skip_flags           = chain::database::skip_nothing;
 
       std::map< steem::protocol::public_key_type, fc::ecc::private_key > _private_keys;
       std::set< steem::protocol::account_name_type >                     _witnesses;
-      boost::asio::deadline_timer                                          _timer;
+      boost::asio::deadline_timer                                        _timer;
 
-      chain::database&     _db;
-      boost::signals2::connection   pre_apply_connection;
-      boost::signals2::connection   applied_block_connection;
-      boost::signals2::connection   on_pre_apply_transaction_connection;
+      plugins::chain::chain_plugin& _chain_plugin;
+      chain::database&              _db;
+      boost::signals2::connection   _post_apply_block_conn;
+      boost::signals2::connection   _pre_apply_operation_conn;
+      boost::signals2::connection   _post_apply_operation_conn;
+
+      std::shared_ptr< witness::block_producer >                         _block_producer;
    };
 
    struct comment_options_extension_visitor
@@ -216,31 +224,7 @@ namespace detail {
       }
    };
 
-   void witness_plugin_impl::pre_transaction( const steem::protocol::signed_transaction& trx )
-   {
-      flat_set< account_name_type > required; vector<authority> other;
-      trx.get_required_authorities( required, required, required, other );
-
-      auto trx_size = fc::raw::pack_size(trx);
-
-      for( const auto& auth : required )
-      {
-         const auto& acnt = _db.get_account( auth );
-
-         update_account_bandwidth( acnt, trx_size, bandwidth_type::forum );
-
-         for( const auto& op : trx.operations )
-         {
-            if( is_market_operation( op ) )
-            {
-               update_account_bandwidth( acnt, trx_size * 10, bandwidth_type::market );
-               break;
-            }
-         }
-      }
-   }
-
-   void witness_plugin_impl::pre_operation( const chain::operation_notification& note )
+   void witness_plugin_impl::on_pre_apply_operation( const chain::operation_notification& note )
    {
       if( _db.is_producing() )
       {
@@ -248,146 +232,64 @@ namespace detail {
       }
    }
 
-   void witness_plugin_impl::on_block( const signed_block& b )
-   { try {
-      int64_t max_block_size = _db.get_dynamic_global_properties().maximum_block_size;
-
-      auto reserve_ratio_ptr = _db.find( reserve_ratio_id_type() );
-
-      if( BOOST_UNLIKELY( reserve_ratio_ptr == nullptr ) )
-      {
-         _db.create< reserve_ratio_object >( [&]( reserve_ratio_object& r )
-         {
-            r.average_block_size = 0;
-            r.current_reserve_ratio = STEEM_MAX_RESERVE_RATIO * RESERVE_RATIO_PRECISION;
-            r.max_virtual_bandwidth = ( static_cast<uint128_t>( STEEM_MAX_BLOCK_SIZE) * STEEM_MAX_RESERVE_RATIO
-                                       * STEEM_BANDWIDTH_PRECISION * STEEM_BANDWIDTH_AVERAGE_WINDOW_SECONDS )
-                                       / STEEM_BLOCK_INTERVAL;
-         });
-      }
-      else
-      {
-         _db.modify( *reserve_ratio_ptr, [&]( reserve_ratio_object& r )
-         {
-            r.average_block_size = ( 99 * r.average_block_size + fc::raw::pack_size( b ) ) / 100;
-
-            /**
-            * About once per minute the average network use is consulted and used to
-            * adjust the reserve ratio. Anything above 25% usage reduces the reserve
-            * ratio proportional to the distance from 25%. If usage is at 50% then
-            * the reserve ratio will half. Likewise, if it is at 12% it will increase by 50%.
-            *
-            * If the reserve ratio is consistently low, then it is probably time to increase
-            * the capcacity of the network.
-            *
-            * This algorithm is designed to react quickly to observations significantly
-            * different from past observed behavior and make small adjustments when
-            * behavior is within expected norms.
-            */
-            if( _db.head_block_num() % 20 == 0 )
-            {
-               int64_t distance = ( ( r.average_block_size - ( max_block_size / 4 ) ) * DISTANCE_CALC_PRECISION )
-                  / ( max_block_size / 4 );
-               auto old_reserve_ratio = r.current_reserve_ratio;
-
-               if( distance > 0 )
-               {
-                  r.current_reserve_ratio -= ( r.current_reserve_ratio * distance ) / ( distance + DISTANCE_CALC_PRECISION );
-
-                  // We do not want the reserve ratio to drop below 1
-                  if( r.current_reserve_ratio < RESERVE_RATIO_PRECISION )
-                     r.current_reserve_ratio = RESERVE_RATIO_PRECISION;
-               }
-               else
-               {
-                  // By default, we should always slowly increase the reserve ratio.
-                  r.current_reserve_ratio += std::max( RESERVE_RATIO_MIN_INCREMENT, ( r.current_reserve_ratio * distance ) / ( distance - DISTANCE_CALC_PRECISION ) );
-
-                  if( r.current_reserve_ratio > STEEM_MAX_RESERVE_RATIO * RESERVE_RATIO_PRECISION )
-                     r.current_reserve_ratio = STEEM_MAX_RESERVE_RATIO * RESERVE_RATIO_PRECISION;
-               }
-
-               if( old_reserve_ratio != r.current_reserve_ratio )
-               {
-                  ilog( "Reserve ratio updated from ${old} to ${new}. Block: ${blocknum}",
-                     ("old", old_reserve_ratio)
-                     ("new", r.current_reserve_ratio)
-                     ("blocknum", _db.head_block_num()) );
-               }
-
-               r.max_virtual_bandwidth = ( uint128_t( max_block_size ) * uint128_t( r.current_reserve_ratio )
-                                          * uint128_t( STEEM_BANDWIDTH_PRECISION * STEEM_BANDWIDTH_AVERAGE_WINDOW_SECONDS ) )
-                                          / ( STEEM_BLOCK_INTERVAL * RESERVE_RATIO_PRECISION );
-            }
-         });
-      }
-   } FC_LOG_AND_RETHROW() }
-   #pragma message( "Remove FC_LOG_AND_RETHROW here before appbase release. It exists to help debug a rare lock exception" )
-
-   void witness_plugin_impl::update_account_bandwidth( const chain::account_object& a, uint32_t trx_size, const bandwidth_type type )
+   void witness_plugin_impl::on_post_apply_operation( const chain::operation_notification& note )
    {
-      const auto& props = _db.get_dynamic_global_properties();
-      bool has_bandwidth = true;
-
-      if( props.total_vesting_shares.amount > 0 )
+      switch( note.op.which() )
       {
-         auto band = _db.find< account_bandwidth_object, by_account_bandwidth_type >( boost::make_tuple( a.name, type ) );
-
-         if( band == nullptr )
-         {
-            band = &_db.create< account_bandwidth_object >( [&]( account_bandwidth_object& b )
+         case operation::tag< custom_operation >::value:
+         case operation::tag< custom_json_operation >::value:
+         case operation::tag< custom_binary_operation >::value:
+            if( _db.is_producing() )
             {
-               b.account = a.name;
-               b.type = type;
-            });
-         }
+               flat_set< account_name_type > impacted;
+               app::operation_get_impacted_accounts( note.op, impacted );
 
-         share_type new_bandwidth;
-         share_type trx_bandwidth = trx_size * STEEM_BANDWIDTH_PRECISION;
-         auto delta_time = ( _db.head_block_time() - band->last_bandwidth_update ).to_seconds();
+               for( const account_name_type& account : impacted )
+               {
+                  // Possible alternative implementation:  Don't call find(), simply catch
+                  // the exception thrown by db.create() when violating uniqueness (std::logic_error).
+                  //
+                  // This alternative implementation isn't "idiomatic" (i.e. AFAICT no existing
+                  // code uses this approach).  However, it may improve performance.
 
-         if( delta_time > STEEM_BANDWIDTH_AVERAGE_WINDOW_SECONDS )
-            new_bandwidth = 0;
-         else
-            new_bandwidth = ( ( ( STEEM_BANDWIDTH_AVERAGE_WINDOW_SECONDS - delta_time ) * fc::uint128( band->average_bandwidth.value ) )
-               / STEEM_BANDWIDTH_AVERAGE_WINDOW_SECONDS ).to_uint64();
+                  const witness_custom_op_object* coo = _db.find< witness_custom_op_object, by_account >( account );
+                  STEEM_ASSERT( !coo, plugin_exception,
+                     "Account ${a} already submitted a custom json operation this block.",
+                     ("a", account) );
 
-         new_bandwidth += trx_bandwidth;
+                  _db.create< witness_custom_op_object >( [&]( witness_custom_op_object& o )
+                  {
+                     o.account = account;
+                  } );
+               }
+            }
 
-         _db.modify( *band, [&]( account_bandwidth_object& b )
-         {
-            b.average_bandwidth = new_bandwidth;
-            b.lifetime_bandwidth += trx_bandwidth;
-            b.last_bandwidth_update = _db.head_block_time();
-         });
+            break;
+         default:
+            break;
+      }
+   }
 
-         fc::uint128 account_vshares( a.effective_vesting_shares().amount.value );
-         fc::uint128 total_vshares( props.total_vesting_shares.amount.value );
-         fc::uint128 account_average_bandwidth( band->average_bandwidth.value );
-         fc::uint128 max_virtual_bandwidth( _db.get( reserve_ratio_id_type() ).max_virtual_bandwidth );
-
-         has_bandwidth = ( account_vshares * max_virtual_bandwidth ) > ( account_average_bandwidth * total_vshares );
-
-         if( _db.is_producing() )
-            STEEM_ASSERT( has_bandwidth,  plugin_exception,
-               "Account: ${account} bandwidth limit exeeded. Please wait to transact or power up STEEM.",
-               ("account", a.name)
-               ("account_vshares", account_vshares)
-               ("account_average_bandwidth", account_average_bandwidth)
-               ("max_virtual_bandwidth", max_virtual_bandwidth)
-               ("total_vesting_shares", total_vshares) );
+   void witness_plugin_impl::on_post_apply_block( const block_notification& note )
+   {
+      const auto& idx = _db.get_index< witness_custom_op_index >().indices().get< by_id >();
+      while( true )
+      {
+         auto it = idx.begin();
+         if( it == idx.end() )
+            break;
+         _db.remove( *it );
       }
    }
 
    void witness_plugin_impl::schedule_production_loop() {
-      //Schedule for the next second's tick regardless of chain state
-      // If we would wait less than 50ms, wait for the whole second.
+      // Sleep for 200ms, before checking the block production
       fc::time_point now = fc::time_point::now();
-      int64_t time_to_next_second = 1000000 - (now.time_since_epoch().count() % 1000000);
-      if(time_to_next_second < 50000)      // we must sleep for at least 50ms
-         time_to_next_second += 1000000;
+      int64_t time_to_sleep = BLOCK_PRODUCTION_LOOP_SLEEP_TIME - (now.time_since_epoch().count() % BLOCK_PRODUCTION_LOOP_SLEEP_TIME);
+      if (time_to_sleep < 50000) // we must sleep for at least 50ms
+          time_to_sleep += BLOCK_PRODUCTION_LOOP_SLEEP_TIME;
 
-      _timer.expires_from_now( boost::posix_time::microseconds( time_to_next_second ) );
+      _timer.expires_from_now( boost::posix_time::microseconds( time_to_sleep ) );
       _timer.async_wait( boost::bind( &witness_plugin_impl::block_production_loop, this ) );
    }
 
@@ -444,7 +346,7 @@ namespace detail {
             elog("Not producing block because node appears to be on a minority fork with only ${pct}% witness participation", (capture) );
             break;
          case block_production_condition::lag:
-            elog("Not producing block because node didn't wake up within 500ms of the slot time.");
+            elog("Not producing block because node didn't wake up within ${t}ms of the slot time.", ("t", BLOCK_PRODUCING_LAG_TIME));
             break;
          case block_production_condition::consecutive:
             elog("Not producing block because the last block was generated by the same witness.\nThis node is probably disconnected from the network so block production has been disabled.\nDisable this check with --allow-consecutive option.");
@@ -462,24 +364,23 @@ namespace detail {
 
    block_production_condition::block_production_condition_enum witness_plugin_impl::maybe_produce_block(fc::mutable_variant_object& capture)
    {
-      chain::database& db = appbase::app().get_plugin< steem::plugins::chain::chain_plugin >().db();
       fc::time_point now_fine = fc::time_point::now();
       fc::time_point_sec now = now_fine + fc::microseconds( 500000 );
 
       // If the next block production opportunity is in the present or future, we're synced.
       if( !_production_enabled )
       {
-         if( db.get_slot_time(1) >= now )
+         if( _db.get_slot_time(1) >= now )
             _production_enabled = true;
          else
             return block_production_condition::not_synced;
       }
 
       // is anyone scheduled to produce now or one second in the future?
-      uint32_t slot = db.get_slot_at_time( now );
+      uint32_t slot = _db.get_slot_at_time( now );
       if( slot == 0 )
       {
-         capture("next_time", db.get_slot_time(1));
+         capture("next_time", _db.get_slot_time(1));
          return block_production_condition::not_time_yet;
       }
 
@@ -491,9 +392,9 @@ namespace detail {
       // which would result in allowing a later block to have a timestamp
       // less than or equal to the previous block
       //
-      assert( now > db.head_block_time() );
+      assert( now > _db.head_block_time() );
 
-      chain::account_name_type scheduled_witness = db.get_scheduled_witness( slot );
+      chain::account_name_type scheduled_witness = _db.get_scheduled_witness( slot );
       // we must control the witness scheduled to produce the next block.
       if( _witnesses.find( scheduled_witness ) == _witnesses.end() )
       {
@@ -501,8 +402,8 @@ namespace detail {
          return block_production_condition::not_my_turn;
       }
 
-      fc::time_point_sec scheduled_time = db.get_slot_time( slot );
-      chain::public_key_type scheduled_key = db.get< chain::witness_object, chain::by_name >(scheduled_witness).signing_key;
+      fc::time_point_sec scheduled_time = _db.get_slot_time( slot );
+      chain::public_key_type scheduled_key = _db.get< chain::witness_object, chain::by_name >(scheduled_witness).signing_key;
       auto private_key_itr = _private_keys.find( scheduled_key );
 
       if( private_key_itr == _private_keys.end() )
@@ -512,20 +413,20 @@ namespace detail {
          return block_production_condition::no_private_key;
       }
 
-      uint32_t prate = db.witness_participation_rate();
+      uint32_t prate = _db.witness_participation_rate();
       if( prate < _required_witness_participation )
       {
          capture("pct", uint32_t(100*uint64_t(prate) / STEEM_1_PERCENT));
          return block_production_condition::low_participation;
       }
 
-      if( llabs((scheduled_time - now).count()) > fc::milliseconds( 500 ).count() )
+      if( llabs((scheduled_time - now).count()) > fc::milliseconds( BLOCK_PRODUCING_LAG_TIME ).count() )
       {
          capture("scheduled_time", scheduled_time)("now", now);
          return block_production_condition::lag;
       }
 
-      auto block = db.generate_block(
+      auto block = _chain_plugin.generate_block(
          scheduled_time,
          scheduled_witness,
          private_key_itr->second,
@@ -536,7 +437,6 @@ namespace detail {
       appbase::app().get_plugin< steem::plugins::p2p::p2p_plugin >().broadcast_block( block );
       return block_production_condition::produced;
    }
-
 } // detail
 
 
@@ -549,17 +449,25 @@ void witness_plugin::set_program_options(
 {
    string witness_id_example = "initwitness";
    cfg.add_options()
-         ("enable-stale-production", bpo::bool_switch()->default_value(false), "Enable block production, even if the chain is stale.")
+         ("enable-stale-production", bpo::value<bool>()->default_value( false ), "Enable block production, even if the chain is stale.")
          ("required-participation", bpo::value< uint32_t >()->default_value( 33 ), "Percent of witnesses (0-99) that must be participating in order to produce blocks")
          ("witness,w", bpo::value<vector<string>>()->composing()->multitoken(),
             ("name of witness controlled by this node (e.g. " + witness_id_example + " )" ).c_str() )
          ("private-key", bpo::value<vector<string>>()->composing()->multitoken(), "WIF PRIVATE KEY to be used by one or more witnesses or miners" )
+         ("witness-skip-enforce-bandwidth", bpo::value<bool>()->default_value( true ), "Skip enforcing bandwidth restrictions. Default is true in favor of rc_plugin." )
+         ;
+   cli.add_options()
+         ("enable-stale-production", bpo::bool_switch()->default_value( false ), "Enable block production, even if the chain is stale.")
+         ("witness-skip-enforce-bandwidth", bpo::bool_switch()->default_value( true ), "Skip enforcing bandwidth restrictions. Default is true in favor of rc_plugin." )
          ;
 }
 
 void witness_plugin::plugin_initialize(const boost::program_options::variables_map& options)
 { try {
+   ilog( "Initializing witness plugin" );
    my = std::make_unique< detail::witness_plugin_impl >( appbase::app().get_io_service() );
+
+   my->_chain_plugin.register_block_generator( get_name(), my->_block_producer );
 
    STEEM_LOAD_VALUE_SET( options, "witness", my->_witnesses, steem::protocol::account_name_type )
 
@@ -576,29 +484,41 @@ void witness_plugin::plugin_initialize(const boost::program_options::variables_m
 
    my->_production_enabled = options.at( "enable-stale-production" ).as< bool >();
 
+   if( my->_witnesses.size() > 0 )
+   {
+      // It is safe to access rc plugin here because of APPBASE_REQUIRES_PLUGIN
+      FC_ASSERT( !appbase::app().get_plugin< rc::rc_plugin >().get_rc_plugin_skip_flags().skip_reject_not_enough_rc,
+         "rc-skip-reject-not-enough-rc=false is required to produce blocks" );
+   }
+
    if( options.count( "required-participation" ) )
    {
       my->_required_witness_participation = STEEM_1_PERCENT * options.at( "required-participation" ).as< uint32_t >();
    }
 
-   my->on_pre_apply_transaction_connection = my->_db.on_pre_apply_transaction.connect( 0, [&]( const signed_transaction& tx ){ my->pre_transaction( tx ); } );
-   my->pre_apply_connection = my->_db.pre_apply_operation.connect( 0, [&]( const operation_notification& note ){ my->pre_operation( note ); } );
-   my->applied_block_connection = my->_db.applied_block.connect( 0, [&]( const signed_block& b ){ my->on_block( b ); } );
+   my->_post_apply_block_conn = my->_db.add_post_apply_block_handler(
+      [&]( const chain::block_notification& note ){ my->on_post_apply_block( note ); }, *this, 0 );
+   my->_pre_apply_operation_conn = my->_db.add_pre_apply_operation_handler(
+      [&]( const chain::operation_notification& note ){ my->on_pre_apply_operation( note ); }, *this, 0);
+   my->_post_apply_operation_conn = my->_db.add_pre_apply_operation_handler(
+      [&]( const chain::operation_notification& note ){ my->on_post_apply_operation( note ); }, *this, 0);
 
-   add_plugin_index< account_bandwidth_index >( my->_db );
-   add_plugin_index< reserve_ratio_index     >( my->_db );
+   if( my->_witnesses.size() && my->_private_keys.size() )
+      my->_chain_plugin.set_write_lock_hold_time( -1 );
 
-   appbase::app().get_plugin< steem::plugins::p2p::p2p_plugin >().set_block_production( true );
+   add_plugin_index< witness_custom_op_index >( my->_db );
+
 } FC_LOG_AND_RETHROW() }
 
 void witness_plugin::plugin_startup()
 { try {
-   ilog("witness plugin:  plugin_startup() begin");
+   ilog("witness plugin:  plugin_startup() begin" );
    chain::database& d = appbase::app().get_plugin< steem::plugins::chain::chain_plugin >().db();
 
    if( !my->_witnesses.empty() )
    {
       ilog( "Launching block production for ${n} witnesses.", ("n", my->_witnesses.size()) );
+      appbase::app().get_plugin< steem::plugins::p2p::p2p_plugin >().set_block_production( true );
       if( my->_production_enabled )
       {
          if( d.head_block_num() == 0 )
@@ -615,9 +535,9 @@ void witness_plugin::plugin_shutdown()
 {
    try
    {
-      chain::util::disconnect_signal( my->pre_apply_connection );
-      chain::util::disconnect_signal( my->applied_block_connection );
-      chain::util::disconnect_signal( my->on_pre_apply_transaction_connection );
+      chain::util::disconnect_signal( my->_post_apply_block_conn );
+      chain::util::disconnect_signal( my->_pre_apply_operation_conn );
+      chain::util::disconnect_signal( my->_post_apply_operation_conn );
 
       my->_timer.cancel();
    }

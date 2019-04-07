@@ -1,9 +1,11 @@
-FROM phusion/baseimage:0.9.19
+FROM phusion/baseimage:0.11
 
 #ARG STEEMD_BLOCKCHAIN=https://example.com/steemd-blockchain.tbz2
 
 ARG STEEM_STATIC_BUILD=ON
 ENV STEEM_STATIC_BUILD ${STEEM_STATIC_BUILD}
+ARG BUILD_STEP
+ENV BUILD_STEP ${BUILD_STEP}
 
 ENV LANG=en_US.UTF-8
 
@@ -17,13 +19,15 @@ RUN \
         build-essential \
         cmake \
         doxygen \
+        gdb \
         git \
         libboost-all-dev \
+        libyajl-dev \
         libreadline-dev \
         libssl-dev \
         libtool \
+        liblz4-tool \
         ncurses-dev \
-        pbzip2 \
         pkg-config \
         python3 \
         python3-dev \
@@ -31,11 +35,17 @@ RUN \
         python3-pip \
         nginx \
         fcgiwrap \
-        s3cmd \
         awscli \
         jq \
         wget \
+        virtualenv \
         gdb \
+        libgflags-dev \
+        libsnappy-dev \
+        zlib1g-dev \
+        libbz2-dev \
+        liblz4-dev \
+        libzstd-dev \
     && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
@@ -44,6 +54,7 @@ RUN \
 ADD . /usr/local/src/steem
 
 RUN \
+    if [ "$BUILD_STEP" = "1" ] || [ ! "$BUILD_STEP" ] ; then \
     cd /usr/local/src/steem && \
     git submodule update --init --recursive && \
     mkdir build && \
@@ -54,41 +65,53 @@ RUN \
         -DLOW_MEMORY_NODE=OFF \
         -DCLEAR_VOTES=ON \
         -DSKIP_BY_TX_ID=ON \
+        -DENABLE_STD_ALLOCATOR_SUPPORT=ON \
         .. && \
-    make -j$(nproc) chain_test test_fixed_string plugin_test && \
+    make -j$(nproc) chain_test mira_test test_fixed_string plugin_test && \
     ./tests/chain_test && \
     ./tests/plugin_test && \
+    ./libraries/mira/test/mira_test && \
     ./programs/util/test_fixed_string && \
     cd /usr/local/src/steem && \
     doxygen && \
-    programs/build_helpers/check_reflect.py && \
+    PYTHONPATH=programs/build_helpers \
+    python3 -m steem_build_helpers.check_reflect && \
     programs/build_helpers/get_config_check.sh && \
-    rm -rf /usr/local/src/steem/build
+    rm -rf /usr/local/src/steem/build ; \
+    fi
 
 RUN \
+    if [ "$BUILD_STEP" = "2" ] || [ ! "$BUILD_STEP" ] ; then \
     cd /usr/local/src/steem && \
     git submodule update --init --recursive && \
     mkdir build && \
     cd build && \
     cmake \
+        -DCMAKE_INSTALL_PREFIX=/usr/local/steemd-testnet \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_STEEM_TESTNET=ON \
         -DLOW_MEMORY_NODE=OFF \
         -DCLEAR_VOTES=ON \
         -DSKIP_BY_TX_ID=ON \
+        -DENABLE_STD_ALLOCATOR_SUPPORT=ON \
         -DENABLE_SMT_SUPPORT=ON \
+        -DSTEEM_STATIC_BUILD=${STEEM_STATIC_BUILD} \
         .. && \
     make -j$(nproc) chain_test test_fixed_string plugin_test && \
+    make install && \
     ./tests/chain_test && \
     ./tests/plugin_test && \
     ./programs/util/test_fixed_string && \
     cd /usr/local/src/steem && \
     doxygen && \
-    programs/build_helpers/check_reflect.py && \
+    PYTHONPATH=programs/build_helpers \
+    python3 -m steem_build_helpers.check_reflect && \
     programs/build_helpers/get_config_check.sh && \
-    rm -rf /usr/local/src/steem/build
+    rm -rf /usr/local/src/steem/build ; \
+    fi
 
 RUN \
+    if [ "$BUILD_STEP" = "1" ] || [ ! "$BUILD_STEP" ] ; then \
     cd /usr/local/src/steem && \
     git submodule update --init --recursive && \
     mkdir build && \
@@ -100,17 +123,20 @@ RUN \
         -DLOW_MEMORY_NODE=OFF \
         -DCLEAR_VOTES=ON \
         -DSKIP_BY_TX_ID=ON \
+        -DENABLE_STD_ALLOCATOR_SUPPORT=ON \
         -DCHAINBASE_CHECK_LOCKING=OFF \
         .. && \
     make -j$(nproc) chain_test plugin_test && \
     ./tests/chain_test && \
     ./tests/plugin_test && \
     mkdir -p /var/cobertura && \
-    gcovr --object-directory="../" --root=../ --xml-pretty --gcov-exclude=".*tests.*" --gcov-exclude=".*fc.*" --gcov-exclude=".*app*" --gcov-exclude=".*net*" --gcov-exclude=".*plugins*" --gcov-exclude=".*schema*" --gcov-exclude=".*time*" --gcov-exclude=".*utilities*" --gcov-exclude=".*wallet*" --gcov-exclude=".*programs*" --output="/var/cobertura/coverage.xml" && \
+    gcovr --object-directory="../" --root=../ --xml-pretty --gcov-exclude=".*tests.*" --gcov-exclude=".*fc.*" --gcov-exclude=".*app*" --gcov-exclude=".*net*" --gcov-exclude=".*plugins*" --gcov-exclude=".*schema*" --gcov-exclude=".*time*" --gcov-exclude=".*utilities*" --gcov-exclude=".*wallet*" --gcov-exclude=".*programs*" --gcov-exclude=".*vendor*" --output="/var/cobertura/coverage.xml" && \
     cd /usr/local/src/steem && \
-    rm -rf /usr/local/src/steem/build
+    rm -rf /usr/local/src/steem/build ; \
+    fi
 
 RUN \
+    if [ "$BUILD_STEP" = "2" ] || [ ! "$BUILD_STEP" ] ; then \
     cd /usr/local/src/steem && \
     git submodule update --init --recursive && \
     mkdir build && \
@@ -122,6 +148,7 @@ RUN \
         -DCLEAR_VOTES=ON \
         -DSKIP_BY_TX_ID=OFF \
         -DBUILD_STEEM_TESTNET=OFF \
+        -DENABLE_STD_ALLOCATOR_SUPPORT=ON \
         -DSTEEM_STATIC_BUILD=${STEEM_STATIC_BUILD} \
         .. \
     && \
@@ -145,12 +172,14 @@ RUN \
         -DCLEAR_VOTES=OFF \
         -DSKIP_BY_TX_ID=ON \
         -DBUILD_STEEM_TESTNET=OFF \
+        -DENABLE_STD_ALLOCATOR_SUPPORT=ON \
         -DSTEEM_STATIC_BUILD=${STEEM_STATIC_BUILD} \
         .. \
     && \
     make -j$(nproc) && \
     make install && \
-    rm -rf /usr/local/src/steem
+    rm -rf /usr/local/src/steem ; \
+    fi
 
 RUN \
     apt-get remove -y \
@@ -161,11 +190,10 @@ RUN \
         cmake \
         doxygen \
         dpkg-dev \
-        git \
         libboost-all-dev \
         libc6-dev \
         libexpat1-dev \
-        libgcc-5-dev \
+        libgcc-7-dev \
         libhwloc-dev \
         libibverbs-dev \
         libicu-dev \
@@ -178,7 +206,7 @@ RUN \
         libreadline-dev \
         libreadline6-dev \
         libssl-dev \
-        libstdc++-5-dev \
+        libstdc++-7-dev \
         libtinfo-dev \
         libtool \
         linux-libc-dev \
@@ -238,10 +266,12 @@ ADD contrib/healthcheck.conf.template /etc/nginx/healthcheck.conf.template
 
 # add PaaS startup script and service script
 ADD contrib/startpaassteemd.sh /usr/local/bin/startpaassteemd.sh
+ADD contrib/pulltestnetscripts.sh /usr/local/bin/pulltestnetscripts.sh
 ADD contrib/paas-sv-run.sh /usr/local/bin/paas-sv-run.sh
 ADD contrib/sync-sv-run.sh /usr/local/bin/sync-sv-run.sh
 ADD contrib/healthcheck.sh /usr/local/bin/healthcheck.sh
 RUN chmod +x /usr/local/bin/startpaassteemd.sh
+RUN chmod +x /usr/local/bin/pulltestnetscripts.sh
 RUN chmod +x /usr/local/bin/paas-sv-run.sh
 RUN chmod +x /usr/local/bin/sync-sv-run.sh
 RUN chmod +x /usr/local/bin/healthcheck.sh

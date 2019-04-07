@@ -4,9 +4,10 @@
 #include <steem/chain/account_object.hpp>
 #include <steem/chain/database.hpp>
 #include <steem/chain/index.hpp>
-#include <steem/chain/operation_notification.hpp>
 
 #include <steem/protocol/smt_operations.hpp>
+
+#define SMT_TEST_PLUGIN_NAI (SMT_MIN_NON_RESERVED_NAI * 10 + 6)
 
 namespace steem { namespace plugins { namespace smt_test {
 
@@ -19,8 +20,8 @@ class smt_test_plugin_impl
          _db( appbase::app().get_plugin< steem::plugins::chain::chain_plugin >().db() ),
          _self( _plugin ) {}
 
-      void pre_operation( const operation_notification& op_obj );
-      void post_operation( const operation_notification& op_obj );
+      void on_pre_apply_operation( const operation_notification& op_obj );
+      void on_post_apply_operation( const operation_notification& op_obj );
       void clear_cache();
       void cache_auths( const account_authority_object& a );
       void update_key_lookup( const account_authority_object& a );
@@ -54,12 +55,12 @@ struct post_operation_visitor
    void operator()( const T& )const {}
 };
 
-void smt_test_plugin_impl::pre_operation( const operation_notification& note )
+void smt_test_plugin_impl::on_pre_apply_operation( const operation_notification& note )
 {
    note.op.visit( pre_operation_visitor( *this ) );
 }
 
-void smt_test_plugin_impl::post_operation( const operation_notification& note )
+void smt_test_plugin_impl::on_post_apply_operation( const operation_notification& note )
 {
    note.op.visit( post_operation_visitor( *this ) );
 }
@@ -74,13 +75,13 @@ void test_alpha()
    uint64_t max_supply = STEEM_MAX_SHARE_SUPPLY / 6000;
 
    // set steem unit, total is 100 STEEM-satoshis = 0.1 STEEM
-   gpolicy.pre_soft_cap_unit.steem_unit.emplace( "founder_a",   7 );
-   gpolicy.pre_soft_cap_unit.steem_unit.emplace( "founder_b",  23 );
-   gpolicy.pre_soft_cap_unit.steem_unit.emplace( "founder_c",  70 );
+   gpolicy.pre_soft_cap_unit.steem_unit.emplace( "founder-a",   7 );
+   gpolicy.pre_soft_cap_unit.steem_unit.emplace( "founder-b",  23 );
+   gpolicy.pre_soft_cap_unit.steem_unit.emplace( "founder-c",  70 );
 
    // set token unit, total is 6 token-satoshis = 0.0006 ALPHA
    gpolicy.pre_soft_cap_unit.token_unit.emplace( "$from", 5 );
-   gpolicy.pre_soft_cap_unit.token_unit.emplace( "founder_d", 1 );
+   gpolicy.pre_soft_cap_unit.token_unit.emplace( "founder-d", 1 );
 
    // no soft cap -> no soft cap unit
    gpolicy.post_soft_cap_unit.steem_unit.clear();
@@ -98,15 +99,17 @@ void test_alpha()
 
    smt_setup_operation setup_op;
    setup_op.control_account = "alpha";
-   setup_op.decimal_places = 4;
+
+   asset_symbol_type alpha_symbol = asset_symbol_type::from_nai( SMT_TEST_PLUGIN_NAI, 4 );
+   setup_op.decimal_places = alpha_symbol.decimals();
+   setup_op.symbol = alpha_symbol;
 
    setup_op.initial_generation_policy = gpolicy;
 
-   setup_op.generation_begin_time = fc::variant( "2017-08-10T00:00:00" ).as< fc::time_point_sec >();
-   setup_op.generation_end_time   = fc::variant( "2017-08-17T00:00:00" ).as< fc::time_point_sec >();
-   setup_op.announced_launch_time = fc::variant( "2017-08-21T00:00:00" ).as< fc::time_point_sec >();
-
-   setup_op.smt_creation_fee = asset( 1000000, SBD_SYMBOL );
+   setup_op.generation_begin_time  = fc::variant( "2017-08-10T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.generation_end_time    = fc::variant( "2017-08-17T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.announced_launch_time  = fc::variant( "2017-08-21T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.launch_expiration_time = fc::variant( "2017-08-22T00:00:00" ).as< fc::time_point_sec >();
 
    setup_op.validate();
 
@@ -154,15 +157,17 @@ void test_beta()
 
    smt_setup_operation setup_op;
    setup_op.control_account = "beta";
-   setup_op.decimal_places = 4;
+
+   asset_symbol_type alpha_symbol = asset_symbol_type::from_nai( SMT_TEST_PLUGIN_NAI, 4 );
+   setup_op.decimal_places = alpha_symbol.decimals();
+   setup_op.symbol = alpha_symbol;
 
    setup_op.initial_generation_policy = gpolicy;
 
-   setup_op.generation_begin_time = fc::variant( "2017-06-01T00:00:00" ).as< fc::time_point_sec >();
-   setup_op.generation_end_time   = fc::variant( "2017-06-30T00:00:00" ).as< fc::time_point_sec >();
-   setup_op.announced_launch_time = fc::variant( "2017-07-01T00:00:00" ).as< fc::time_point_sec >();
-
-   setup_op.smt_creation_fee = asset( 1000000, SBD_SYMBOL );
+   setup_op.generation_begin_time  = fc::variant( "2017-06-01T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.generation_end_time    = fc::variant( "2017-06-30T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.announced_launch_time  = fc::variant( "2017-07-01T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.launch_expiration_time = fc::variant( "2017-07-02T00:00:00" ).as< fc::time_point_sec >();
 
    setup_op.validate();
 
@@ -207,15 +212,17 @@ void test_delta()
 
    smt_setup_operation setup_op;
    setup_op.control_account = "delta";
-   setup_op.decimal_places = 5;
+
+   asset_symbol_type delta_symbol = asset_symbol_type::from_nai( SMT_TEST_PLUGIN_NAI, 5 );
+   setup_op.decimal_places = delta_symbol.decimals();
+   setup_op.symbol = delta_symbol;
 
    setup_op.initial_generation_policy = gpolicy;
 
-   setup_op.generation_begin_time = fc::variant( "2017-06-01T00:00:00" ).as< fc::time_point_sec >();
-   setup_op.generation_end_time   = fc::variant( "2017-06-30T00:00:00" ).as< fc::time_point_sec >();
-   setup_op.announced_launch_time = fc::variant( "2017-07-01T00:00:00" ).as< fc::time_point_sec >();
-
-   setup_op.smt_creation_fee = asset( 1000000, SBD_SYMBOL );
+   setup_op.generation_begin_time  = fc::variant( "2017-06-01T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.generation_end_time    = fc::variant( "2017-06-30T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.announced_launch_time  = fc::variant( "2017-07-01T00:00:00" ).as< fc::time_point_sec >();
+   setup_op.launch_expiration_time = fc::variant( "2017-07-02T00:00:00" ).as< fc::time_point_sec >();
 
    setup_op.validate();
 
@@ -269,8 +276,8 @@ void smt_test_plugin::plugin_initialize( const boost::program_options::variables
       ilog( "Initializing smt_test plugin" );
       chain::database& db = appbase::app().get_plugin< steem::plugins::chain::chain_plugin >().db();
 
-      db.pre_apply_operation.connect( 0, [&]( const operation_notification& o ){ my->pre_operation( o ); } );
-      db.post_apply_operation.connect( 0, [&]( const operation_notification& o ){ my->post_operation( o ); } );
+      db.add_pre_apply_operation_handler( [&]( const operation_notification& note ){ my->on_pre_apply_operation( note ); }, *this, 0 );
+      db.add_post_apply_operation_handler( [&]( const operation_notification& note ){ my->on_post_apply_operation( note ); }, *this, 0 );
 
       // add_plugin_index< key_lookup_index >(db);
    }

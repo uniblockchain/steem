@@ -1,4 +1,7 @@
 #pragma once
+#include <steem/chain/steem_fwd.hpp>
+
+#include <steem/chain/steem_fwd.hpp>
 
 #include <steem/protocol/authority.hpp>
 #include <steem/protocol/operations.hpp>
@@ -8,19 +11,16 @@
 #include <steem/chain/steem_object_types.hpp>
 #include <steem/chain/witness_objects.hpp>
 
-#include <boost/multi_index/composite_key.hpp>
-
-
 namespace steem { namespace chain {
 
    class operation_object : public object< operation_object_type, operation_object >
    {
-      operation_object() = delete;
+      STEEM_STD_ALLOCATOR_CONSTRUCTOR( operation_object )
 
       public:
          template< typename Constructor, typename Allocator >
          operation_object( Constructor&& c, allocator< Allocator > a )
-            :serialized_op( a.get_segment_manager() )
+            :serialized_op( a )
          {
             c( *this );
          }
@@ -30,10 +30,12 @@ namespace steem { namespace chain {
          transaction_id_type  trx_id;
          uint32_t             block = 0;
          uint32_t             trx_in_block = 0;
-         uint16_t             op_in_trx = 0;
-         uint64_t             virtual_op = 0;
+         uint32_t             op_in_trx = 0;
+         uint32_t             virtual_op = 0;
          time_point_sec       timestamp;
          buffer_type          serialized_op;
+
+         uint64_t             get_virtual_op() const { return virtual_op; }
    };
 
    struct by_location;
@@ -44,11 +46,8 @@ namespace steem { namespace chain {
          ordered_unique< tag< by_id >, member< operation_object, operation_id_type, &operation_object::id > >,
          ordered_unique< tag< by_location >,
             composite_key< operation_object,
-               member< operation_object, uint32_t, &operation_object::block>,
-               member< operation_object, uint32_t, &operation_object::trx_in_block>,
-               member< operation_object, uint16_t, &operation_object::op_in_trx>,
-               member< operation_object, uint64_t, &operation_object::virtual_op>,
-               member< operation_object, operation_id_type, &operation_object::id>
+               member< operation_object, uint32_t, &operation_object::block >,
+               member< operation_object, operation_id_type, &operation_object::id >
             >
          >
 #ifndef SKIP_BY_TX_ID
@@ -72,6 +71,8 @@ namespace steem { namespace chain {
          {
             c( *this );
          }
+
+         account_history_object() {}
 
          id_type           id;
 
@@ -98,10 +99,19 @@ namespace steem { namespace chain {
    > account_history_index;
 } }
 
+#ifdef ENABLE_STD_ALLOCATOR
+namespace mira {
+
+template<> struct is_static_length< steem::chain::account_history_object > : public boost::true_type {};
+
+} // mira
+#endif
+
 FC_REFLECT( steem::chain::operation_object, (id)(trx_id)(block)(trx_in_block)(op_in_trx)(virtual_op)(timestamp)(serialized_op) )
 CHAINBASE_SET_INDEX_TYPE( steem::chain::operation_object, steem::chain::operation_index )
 
 FC_REFLECT( steem::chain::account_history_object, (id)(account)(sequence)(op) )
+
 CHAINBASE_SET_INDEX_TYPE( steem::chain::account_history_object, steem::chain::account_history_index )
 
 namespace helpers
@@ -116,7 +126,7 @@ namespace helpers
       {
          index_statistic_info info;
          gather_index_static_data(index, &info);
-         
+
          if(onlyStaticInfo == false)
          {
             for(const auto& o : index)

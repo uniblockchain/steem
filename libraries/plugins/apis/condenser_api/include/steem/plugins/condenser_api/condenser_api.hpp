@@ -1,4 +1,5 @@
 #pragma once
+#include <steem/chain/steem_fwd.hpp>
 
 #include <steem/plugins/database_api/database_api.hpp>
 #include <steem/plugins/block_api/block_api.hpp>
@@ -7,8 +8,8 @@
 #include <steem/plugins/network_broadcast_api/network_broadcast_api.hpp>
 #include <steem/plugins/tags_api/tags_api.hpp>
 #include <steem/plugins/follow_api/follow_api.hpp>
+#include <steem/plugins/reputation_api/reputation_api.hpp>
 #include <steem/plugins/market_history_api/market_history_api.hpp>
-#include <steem/plugins/witness_api/witness_api.hpp>
 
 #include <steem/plugins/condenser_api/condenser_api_legacy_objects.hpp>
 
@@ -46,15 +47,29 @@ struct discussion_index
    vector< string > promoted;         /// pending lifetime payout
 };
 
-struct extended_limit_order : public database_api::api_limit_order_object
+struct api_limit_order_object
 {
-   extended_limit_order( const limit_order_object& o ) :
-      database_api::api_limit_order_object( o ) {}
+   api_limit_order_object( const limit_order_object& o ) :
+      id( o.id ),
+      created( o.created ),
+      expiration( o.expiration ),
+      seller( o.seller ),
+      orderid( o.orderid ),
+      for_sale( o.for_sale ),
+      sell_price( o.sell_price )
+   {}
 
-   extended_limit_order(){}
+   api_limit_order_object(){}
 
-   double real_price  = 0;
-   bool   rewarded    = false;
+   limit_order_id_type  id;
+   time_point_sec       created;
+   time_point_sec       expiration;
+   account_name_type    seller;
+   uint32_t             orderid = 0;
+   share_type           for_sale;
+   legacy_price         sell_price;
+   double               real_price = 0;
+   bool                 rewarded   = false;
 };
 
 
@@ -73,8 +88,8 @@ struct api_operation_object
    transaction_id_type  trx_id;
    uint32_t             block = 0;
    uint32_t             trx_in_block = 0;
-   uint16_t             op_in_trx = 0;
-   uint64_t             virtual_op = 0;
+   uint32_t             op_in_trx = 0;
+   uint32_t             virtual_op = 0;
    fc::time_point_sec   timestamp;
    legacy_operation     op;
 };
@@ -101,8 +116,7 @@ struct api_account_object
       lifetime_vote_count( a.lifetime_vote_count ),
       post_count( a.post_count ),
       can_vote( a.can_vote ),
-      voting_power( a.voting_power ),
-      last_vote_time( a.last_vote_time ),
+      voting_manabar( a.voting_manabar ),
       balance( legacy_asset::from_asset( a.balance ) ),
       savings_balance( legacy_asset::from_asset( a.savings_balance ) ),
       sbd_balance( legacy_asset::from_asset( a.sbd_balance ) ),
@@ -130,13 +144,18 @@ struct api_account_object
       withdraw_routes( a.withdraw_routes ),
       witnesses_voted_for( a.witnesses_voted_for ),
       last_post( a.last_post ),
-      last_root_post( a.last_root_post )
+      last_root_post( a.last_root_post ),
+      last_vote_time( a.last_vote_time ),
+      post_bandwidth( a.post_bandwidth ),
+      pending_claimed_accounts( a.pending_claimed_accounts )
    {
+      voting_power = _compute_voting_power(a);
       proxied_vsf_votes.insert( proxied_vsf_votes.end(), a.proxied_vsf_votes.begin(), a.proxied_vsf_votes.end() );
    }
 
-
    api_account_object(){}
+
+   uint16_t _compute_voting_power( const database_api::api_account_object& a );
 
    account_id_type   id;
 
@@ -161,8 +180,8 @@ struct api_account_object
    uint32_t          post_count = 0;
 
    bool              can_vote = false;
+   util::manabar     voting_manabar;
    uint16_t          voting_power = 0;
-   time_point_sec    last_vote_time;
 
    legacy_asset      balance;
    legacy_asset      savings_balance;
@@ -198,10 +217,14 @@ struct api_account_object
 
    vector< share_type > proxied_vsf_votes;
 
-   uint16_t          witnesses_voted_for;
+   uint16_t          witnesses_voted_for = 0;
 
    time_point_sec    last_post;
    time_point_sec    last_root_post;
+   time_point_sec    last_vote_time;
+   uint32_t          post_bandwidth = 0;
+
+   share_type        pending_claimed_accounts = 0;
 };
 
 struct extended_account : public api_account_object
@@ -209,13 +232,6 @@ struct extended_account : public api_account_object
    extended_account(){}
    extended_account( const database_api::api_account_object& a ) :
       api_account_object( a ) {}
-
-   share_type                                               average_bandwidth;
-   share_type                                               lifetime_bandwidth;
-   time_point_sec                                           last_bandwidth_update;
-   share_type                                               average_market_bandwidth;
-   share_type                                               lifetime_market_bandwidth;
-   time_point_sec                                           last_market_bandwidth_update;
 
    legacy_asset                                             vesting_balance;  /// convert vesting_shares to vesting steem
    share_type                                               reputation = 0;
@@ -228,12 +244,105 @@ struct extended_account : public api_account_object
    vector< tags::tag_count_object >                         tags_usage;
    vector< follow::reblog_count >                           guest_bloggers;
 
-   optional< map< uint32_t, extended_limit_order > >        open_orders;
+   optional< map< uint32_t, api_limit_order_object > >      open_orders;
    optional< vector< string > >                             comments;         /// permlinks for this user
    optional< vector< string > >                             blog;             /// blog posts for this user
    optional< vector< string > >                             feed;             /// feed posts for this user
    optional< vector< string > >                             recent_replies;   /// blog posts for this user
    optional< vector< string > >                             recommended;      /// posts recommened for this user
+};
+
+struct api_comment_object
+{
+   api_comment_object( const database_api::api_comment_object& c ):
+      id( c.id ),
+      category( c.category ),
+      parent_author( c.parent_author ),
+      parent_permlink( c.parent_permlink ),
+      author( c.author ),
+      permlink( c.permlink ),
+      title( c.title ),
+      body( c.body ),
+      json_metadata( c.json_metadata ),
+      last_update( c.last_update ),
+      created( c.created ),
+      active( c.active ),
+      last_payout( c.last_payout ),
+      depth( c.depth ),
+      children( c.children ),
+      net_rshares( c.net_rshares ),
+      abs_rshares( c.abs_rshares ),
+      vote_rshares( c.vote_rshares ),
+      children_abs_rshares( c.children_abs_rshares ),
+      cashout_time( c.cashout_time ),
+      max_cashout_time( c.max_cashout_time ),
+      total_vote_weight( c.total_vote_weight ),
+      reward_weight( c.reward_weight ),
+      total_payout_value( legacy_asset::from_asset( c.total_payout_value ) ),
+      curator_payout_value( legacy_asset::from_asset( c.curator_payout_value ) ),
+      author_rewards( c.author_rewards ),
+      net_votes( c.net_votes ),
+      root_author( c.root_author ),
+      root_permlink( c.root_permlink ),
+      max_accepted_payout( legacy_asset::from_asset( c.max_accepted_payout ) ),
+      percent_steem_dollars( c.percent_steem_dollars ),
+      allow_replies( c.allow_replies ),
+      allow_votes( c.allow_votes ),
+      allow_curation_rewards( c.allow_curation_rewards )
+   {
+      for( auto& route : c.beneficiaries )
+      {
+         beneficiaries.push_back( route );
+      }
+   }
+
+   api_comment_object(){}
+
+   comment_id_type   id;
+   string            category;
+   string            parent_author;
+   string            parent_permlink;
+   string            author;
+   string            permlink;
+
+   string            title;
+   string            body;
+   string            json_metadata;
+   time_point_sec    last_update;
+   time_point_sec    created;
+   time_point_sec    active;
+   time_point_sec    last_payout;
+
+   uint8_t           depth = 0;
+   uint32_t          children = 0;
+
+   share_type        net_rshares;
+   share_type        abs_rshares;
+   share_type        vote_rshares;
+
+   share_type        children_abs_rshares;
+   time_point_sec    cashout_time;
+   time_point_sec    max_cashout_time;
+   uint64_t          total_vote_weight = 0;
+
+   uint16_t          reward_weight = 0;
+
+   legacy_asset      total_payout_value;
+   legacy_asset      curator_payout_value;
+
+   share_type        author_rewards;
+
+   int32_t           net_votes = 0;
+
+   account_name_type root_author;
+   string            root_permlink;
+
+   legacy_asset      max_accepted_payout;
+   uint16_t          percent_steem_dollars = 0;
+   bool              allow_replies = false;
+   bool              allow_votes = false;
+   bool              allow_curation_rewards = false;
+   vector< beneficiary_route_type > beneficiaries;
 };
 
 struct extended_dynamic_global_properties
@@ -264,7 +373,11 @@ struct extended_dynamic_global_properties
       recent_slots_filled( o.recent_slots_filled ),
       participation_count( o.participation_count ),
       last_irreversible_block_num( o.last_irreversible_block_num ),
-      vote_power_reserve_rate( o.vote_power_reserve_rate )
+      vote_power_reserve_rate( o.vote_power_reserve_rate ),
+      delegation_return_period( o.delegation_return_period ),
+      reverse_auction_seconds( o.reverse_auction_seconds ),
+      sbd_stop_percent( o.sbd_stop_percent ),
+      sbd_start_percent( o.sbd_start_percent )
    {}
 
    uint32_t          head_block_number = 0;
@@ -299,24 +412,12 @@ struct extended_dynamic_global_properties
    uint32_t          last_irreversible_block_num = 0;
 
    uint32_t          vote_power_reserve_rate = STEEM_INITIAL_VOTE_POWER_RATE;
+   uint32_t          delegation_return_period = STEEM_DELEGATION_RETURN_PERIOD_HF0;
 
-   int32_t           average_block_size = 0;
-   int64_t           current_reserve_ratio = 1;
-   uint128_t         max_virtual_bandwidth = 0;
-};
+   uint64_t          reverse_auction_seconds = 0;
 
-struct legacy_chain_properties
-{
-   legacy_chain_properties() {}
-   legacy_chain_properties( const chain::chain_properties& c ) :
-      account_creation_fee( legacy_asset::from_asset( c.account_creation_fee ) ),
-      maximum_block_size( c.maximum_block_size ),
-      sbd_interest_rate( c.sbd_interest_rate )
-   {}
-
-   legacy_asset   account_creation_fee;
-   uint32_t       maximum_block_size = STEEM_MIN_BLOCK_SIZE_LIMIT * 2;
-   uint16_t       sbd_interest_rate = STEEM_DEFAULT_SBD_INTEREST_RATE;
+   uint16_t          sbd_stop_percent = 0;
+   uint16_t          sbd_start_percent = 0;
 };
 
 struct api_witness_object
@@ -342,7 +443,8 @@ struct api_witness_object
       last_work( w.last_work ),
       running_version( w.running_version ),
       hardfork_version_vote( w.hardfork_version_vote ),
-      hardfork_time_vote( w.hardfork_time_vote )
+      hardfork_time_vote( w.hardfork_time_vote ),
+      available_witness_account_subsidies( w.available_witness_account_subsidies )
    {}
 
    witness_id_type  id;
@@ -354,7 +456,7 @@ struct api_witness_object
    uint64_t                last_confirmed_block_num = 0;
    uint64_t                pow_worker;
    public_key_type         signing_key;
-   legacy_chain_properties props;
+   api_chain_properties    props;
    legacy_price            sbd_exchange_rate;
    time_point_sec          last_sbd_exchange_update;
    share_type              votes;
@@ -365,6 +467,7 @@ struct api_witness_object
    version                 running_version;
    hardfork_version        hardfork_version_vote;
    time_point_sec          hardfork_time_vote = STEEM_GENESIS_TIME;
+   int64_t                 available_witness_account_subsidies = 0;
 };
 
 struct api_witness_schedule_object
@@ -375,7 +478,7 @@ struct api_witness_schedule_object
       current_virtual_time( w.current_virtual_time ),
       next_shuffle_block_num( w.next_shuffle_block_num ),
       num_scheduled_witnesses( w.num_scheduled_witnesses ),
-      top19_weight( w.top19_weight ),
+      elected_weight( w.elected_weight ),
       timeshare_weight( w.timeshare_weight ),
       miner_weight( w.miner_weight ),
       witness_pay_normalization_factor( w.witness_pay_normalization_factor ),
@@ -384,7 +487,10 @@ struct api_witness_schedule_object
       max_voted_witnesses( w.max_voted_witnesses ),
       max_miner_witnesses( w.max_miner_witnesses ),
       max_runner_witnesses( w.max_runner_witnesses ),
-      hardfork_required_witnesses( w.hardfork_required_witnesses )
+      hardfork_required_witnesses( w.hardfork_required_witnesses ),
+      account_subsidy_rd( w.account_subsidy_rd ),
+      account_subsidy_witness_rd( w.account_subsidy_witness_rd ),
+      min_witness_account_subsidy_decay( w.min_witness_account_subsidy_decay )
    {
       current_shuffled_witnesses.insert( current_shuffled_witnesses.begin(), w.current_shuffled_witnesses.begin(), w.current_shuffled_witnesses.end() );
    }
@@ -394,16 +500,20 @@ struct api_witness_schedule_object
    uint32_t                      next_shuffle_block_num = 1;
    vector< account_name_type >   current_shuffled_witnesses;
    uint8_t                       num_scheduled_witnesses = 1;
-   uint8_t                       top19_weight = 1;
+   uint8_t                       elected_weight = 1;
    uint8_t                       timeshare_weight = 5;
    uint8_t                       miner_weight = 1;
    uint32_t                      witness_pay_normalization_factor = 25;
-   legacy_chain_properties       median_props;
+   api_chain_properties          median_props;
    version                       majority_version;
    uint8_t                       max_voted_witnesses           = STEEM_MAX_VOTED_WITNESSES_HF0;
    uint8_t                       max_miner_witnesses           = STEEM_MAX_MINER_WITNESSES_HF0;
    uint8_t                       max_runner_witnesses          = STEEM_MAX_RUNNER_WITNESSES_HF0;
    uint8_t                       hardfork_required_witnesses   = STEEM_HARDFORK_REQUIRED_WITNESSES;
+
+   rd_dynamics_params            account_subsidy_rd;
+   rd_dynamics_params            account_subsidy_witness_rd;
+   int64_t                       min_witness_account_subsidy_decay = 0;
 };
 
 struct api_feed_history_object
@@ -447,8 +557,8 @@ struct api_reward_fund_object
    uint128_t               content_constant = 0;
    uint16_t                percent_curation_rewards = 0;
    uint16_t                percent_content_rewards = 0;
-   protocol::curve_id      author_reward_curve;
-   protocol::curve_id      curation_reward_curve;
+   protocol::curve_id      author_reward_curve = protocol::linear;
+   protocol::curve_id      curation_reward_curve = protocol::square_root;
 };
 
 struct api_escrow_object
@@ -562,45 +672,14 @@ struct api_convert_request_object
    time_point_sec    conversion_date;
 };
 
-struct discussion
+struct discussion : public api_comment_object
 {
    discussion() {}
+
+   discussion( const api_comment_object& c ) : api_comment_object( c ) {}
+
    discussion( const tags::discussion& d ) :
-      id( d.id ),
-      category( d.category ),
-      parent_author( d.parent_author ),
-      parent_permlink( d.parent_permlink ),
-      author( d.author ),
-      permlink( d.permlink ),
-      title( d.title ),
-      body( d.body ),
-      json_metadata( d.json_metadata ),
-      last_update( d.last_update ),
-      created( d.created ),
-      active( d.active ),
-      last_payout( d.last_payout ),
-      depth( d.depth ),
-      children( d.children ),
-      net_rshares( d.net_rshares ),
-      abs_rshares( d.abs_rshares ),
-      vote_rshares( d.vote_rshares ),
-      children_abs_rshares( d.children_abs_rshares ),
-      cashout_time( d.cashout_time ),
-      max_cashout_time( d.max_cashout_time ),
-      total_vote_weight( d.total_vote_weight ),
-      reward_weight( d.reward_weight ),
-      total_payout_value( legacy_asset::from_asset( d.total_payout_value ) ),
-      curator_payout_value( legacy_asset::from_asset( d.curator_payout_value ) ),
-      author_rewards( d.author_rewards ),
-      net_votes( d.net_votes ),
-      root_author( d.root_author ),
-      root_permlink( d.root_permlink ),
-      max_accepted_payout( legacy_asset::from_asset( d.max_accepted_payout ) ),
-      percent_steem_dollars( d.percent_steem_dollars ),
-      allow_replies( d.allow_replies ),
-      allow_votes( d.allow_votes ),
-      allow_curation_rewards( d.allow_curation_rewards ),
-      beneficiaries( d.beneficiaries ),
+      api_comment_object( d ),
       url( d.url ),
       root_title( d.root_title ),
       pending_payout_value( legacy_asset::from_asset( d.pending_payout_value ) ),
@@ -614,53 +693,6 @@ struct discussion
       first_reblogged_by( d.first_reblogged_by ),
       first_reblogged_on( d.first_reblogged_on )
    {}
-
-
-   comment_id_type   id;
-   string            category;
-   string            parent_author;
-   string            parent_permlink;
-   string            author;
-   string            permlink;
-
-   string            title;
-   string            body;
-   string            json_metadata;
-   time_point_sec    last_update;
-   time_point_sec    created;
-   time_point_sec    active;
-   time_point_sec    last_payout;
-
-   uint8_t           depth = 0;
-   uint32_t          children = 0;
-
-   share_type        net_rshares;
-   share_type        abs_rshares;
-   share_type        vote_rshares;
-
-   share_type        children_abs_rshares;
-   time_point_sec    cashout_time;
-   time_point_sec    max_cashout_time;
-   uint64_t          total_vote_weight = 0;
-
-   uint16_t          reward_weight = 0;
-
-   legacy_asset      total_payout_value;
-   legacy_asset      curator_payout_value;
-
-   share_type        author_rewards;
-
-   int32_t           net_votes = 0;
-
-   account_name_type root_author;
-   string            root_permlink;
-
-   legacy_asset      max_accepted_payout;
-   uint16_t          percent_steem_dollars = 0;
-   bool              allow_replies = false;
-   bool              allow_votes = false;
-   bool              allow_curation_rewards = false;
-   vector< beneficiary_route_type > beneficiaries;
 
    string                        url; /// /category/@rootauthor/root_permlink#author/permlink
    string                        root_title;
@@ -765,6 +797,60 @@ struct get_version_return
 
 typedef map< uint32_t, api_operation_object > get_account_history_return_type;
 
+typedef vector< variant > broadcast_transaction_synchronous_args;
+
+struct broadcast_transaction_synchronous_return
+{
+   broadcast_transaction_synchronous_return() {}
+   broadcast_transaction_synchronous_return( transaction_id_type txid, int32_t bn, int32_t tn, bool ex )
+   : id(txid), block_num(bn), trx_num(tn), expired(ex) {}
+
+   transaction_id_type   id;
+   int32_t               block_num = 0;
+   int32_t               trx_num   = 0;
+   bool                  expired   = false;
+};
+
+struct comment_feed_entry
+{
+   comment_feed_entry( const follow::comment_feed_entry& c ) :
+      comment( c.comment ),
+      reblog_on( c.reblog_on ),
+      entry_id( c.entry_id )
+   {
+      reblog_by.resize( c.reblog_by.size() );
+
+      for( auto& a : c.reblog_by )
+      {
+         reblog_by.push_back( a );
+      }
+   }
+
+   comment_feed_entry() {}
+
+   api_comment_object            comment;
+   vector< account_name_type >   reblog_by;
+   time_point_sec                reblog_on;
+   uint32_t                      entry_id = 0;
+};
+
+struct comment_blog_entry
+{
+   comment_blog_entry( const follow::comment_blog_entry& c ) :
+      comment( c.comment ),
+      blog( c.blog ),
+      reblog_on( c.reblog_on ),
+      entry_id( c.entry_id )
+   {}
+
+   comment_blog_entry() {}
+
+   api_comment_object   comment;
+   string               blog;
+   time_point_sec       reblog_on;
+   uint32_t             entry_id = 0;
+};
+
 struct ticker
 {
    ticker() {}
@@ -855,7 +941,7 @@ DEFINE_API_ARGS( get_block,                              vector< variant >,   op
 DEFINE_API_ARGS( get_ops_in_block,                       vector< variant >,   vector< api_operation_object > )
 DEFINE_API_ARGS( get_config,                             vector< variant >,   fc::variant_object )
 DEFINE_API_ARGS( get_dynamic_global_properties,          vector< variant >,   extended_dynamic_global_properties )
-DEFINE_API_ARGS( get_chain_properties,                   vector< variant >,   chain_properties )
+DEFINE_API_ARGS( get_chain_properties,                   vector< variant >,   api_chain_properties )
 DEFINE_API_ARGS( get_current_median_history_price,       vector< variant >,   legacy_price )
 DEFINE_API_ARGS( get_feed_history,                       vector< variant >,   api_feed_history_object )
 DEFINE_API_ARGS( get_witness_schedule,                   vector< variant >,   api_witness_schedule_object )
@@ -872,7 +958,6 @@ DEFINE_API_ARGS( get_owner_history,                      vector< variant >,   ve
 DEFINE_API_ARGS( get_recovery_request,                   vector< variant >,   optional< database_api::api_account_recovery_request_object > )
 DEFINE_API_ARGS( get_escrow,                             vector< variant >,   optional< api_escrow_object > )
 DEFINE_API_ARGS( get_withdraw_routes,                    vector< variant >,   vector< database_api::api_withdraw_vesting_route_object > )
-DEFINE_API_ARGS( get_account_bandwidth,                  vector< variant >,   optional< witness::api_account_bandwidth_object > )
 DEFINE_API_ARGS( get_savings_withdraw_from,              vector< variant >,   vector< api_savings_withdraw_object > )
 DEFINE_API_ARGS( get_savings_withdraw_to,                vector< variant >,   vector< api_savings_withdraw_object > )
 DEFINE_API_ARGS( get_vesting_delegations,                vector< variant >,   vector< api_vesting_delegation_object > )
@@ -882,10 +967,10 @@ DEFINE_API_ARGS( get_conversion_requests,                vector< variant >,   ve
 DEFINE_API_ARGS( get_witness_by_account,                 vector< variant >,   optional< api_witness_object > )
 DEFINE_API_ARGS( get_witnesses_by_vote,                  vector< variant >,   vector< api_witness_object > )
 DEFINE_API_ARGS( lookup_witness_accounts,                vector< variant >,   vector< account_name_type > )
-DEFINE_API_ARGS( get_open_orders,                        vector< variant >,   vector< extended_limit_order > )
+DEFINE_API_ARGS( get_open_orders,                        vector< variant >,   vector< api_limit_order_object > )
 DEFINE_API_ARGS( get_witness_count,                      vector< variant >,   uint64_t )
 DEFINE_API_ARGS( get_transaction_hex,                    vector< variant >,   string )
-DEFINE_API_ARGS( get_transaction,                        vector< variant >,   annotated_signed_transaction )
+DEFINE_API_ARGS( get_transaction,                        vector< variant >,   legacy_signed_transaction )
 DEFINE_API_ARGS( get_required_signatures,                vector< variant >,   set< public_key_type > )
 DEFINE_API_ARGS( get_potential_signatures,               vector< variant >,   set< public_key_type > )
 DEFINE_API_ARGS( verify_authority,                       vector< variant >,   bool )
@@ -912,16 +997,15 @@ DEFINE_API_ARGS( get_replies_by_last_update,             vector< variant >,   ve
 DEFINE_API_ARGS( get_discussions_by_author_before_date,  vector< variant >,   vector< discussion > )
 DEFINE_API_ARGS( get_account_history,                    vector< variant >,   get_account_history_return_type )
 DEFINE_API_ARGS( broadcast_transaction,                  vector< variant >,   json_rpc::void_type )
-DEFINE_API_ARGS( broadcast_transaction_synchronous,      vector< variant >,   network_broadcast_api::broadcast_transaction_synchronous_return )
 DEFINE_API_ARGS( broadcast_block,                        vector< variant >,   json_rpc::void_type )
 DEFINE_API_ARGS( get_followers,                          vector< variant >,   vector< follow::api_follow_object > )
 DEFINE_API_ARGS( get_following,                          vector< variant >,   vector< follow::api_follow_object > )
 DEFINE_API_ARGS( get_follow_count,                       vector< variant >,   follow::get_follow_count_return )
 DEFINE_API_ARGS( get_feed_entries,                       vector< variant >,   vector< follow::feed_entry > )
-DEFINE_API_ARGS( get_feed,                               vector< variant >,   vector< follow::comment_feed_entry > )
+DEFINE_API_ARGS( get_feed,                               vector< variant >,   vector< comment_feed_entry > )
 DEFINE_API_ARGS( get_blog_entries,                       vector< variant >,   vector< follow::blog_entry > )
-DEFINE_API_ARGS( get_blog,                               vector< variant >,   vector< follow::comment_blog_entry > )
-DEFINE_API_ARGS( get_account_reputations,                vector< variant >,   vector< follow::account_reputation > )
+DEFINE_API_ARGS( get_blog,                               vector< variant >,   vector< comment_blog_entry > )
+DEFINE_API_ARGS( get_account_reputations,                vector< variant >,   vector< reputation::account_reputation > )
 DEFINE_API_ARGS( get_reblogged_by,                       vector< variant >,   vector< account_name_type > )
 DEFINE_API_ARGS( get_blog_authors,                       vector< variant >,   vector< follow::reblog_count > )
 DEFINE_API_ARGS( get_ticker,                             vector< variant >,   ticker )
@@ -967,7 +1051,6 @@ public:
       (get_recovery_request)
       (get_escrow)
       (get_withdraw_routes)
-      (get_account_bandwidth)
       (get_savings_withdraw_from)
       (get_savings_withdraw_to)
       (get_vesting_delegations)
@@ -1046,8 +1129,8 @@ FC_REFLECT( steem::plugins::condenser_api::api_tag_object,
 FC_REFLECT( steem::plugins::condenser_api::state,
             (current_route)(props)(tag_idx)(tags)(content)(accounts)(witnesses)(discussion_idx)(witness_schedule)(feed_price)(error) )
 
-FC_REFLECT_DERIVED( steem::plugins::condenser_api::extended_limit_order, (steem::plugins::database_api::api_limit_order_object),
-            (real_price)(rewarded) )
+FC_REFLECT( steem::plugins::condenser_api::api_limit_order_object,
+            (id)(created)(expiration)(seller)(orderid)(for_sale)(sell_price)(real_price)(rewarded) )
 
 FC_REFLECT( steem::plugins::condenser_api::api_operation_object,
              (trx_id)(block)(trx_in_block)(op_in_trx)(virtual_op)(timestamp)(op) )
@@ -1056,7 +1139,7 @@ FC_REFLECT( steem::plugins::condenser_api::api_account_object,
              (id)(name)(owner)(active)(posting)(memo_key)(json_metadata)(proxy)(last_owner_update)(last_account_update)
              (created)(mined)
              (recovery_account)(last_account_recovery)(reset_account)
-             (comment_count)(lifetime_vote_count)(post_count)(can_vote)(voting_power)(last_vote_time)
+             (comment_count)(lifetime_vote_count)(post_count)(can_vote)(voting_manabar)(voting_power)
              (balance)
              (savings_balance)
              (sbd_balance)(sbd_seconds)(sbd_seconds_last_update)(sbd_last_interest_payment)
@@ -1066,12 +1149,25 @@ FC_REFLECT( steem::plugins::condenser_api::api_account_object,
              (curation_rewards)
              (posting_rewards)
              (proxied_vsf_votes)(witnesses_voted_for)
-             (last_post)(last_root_post)
+             (last_post)(last_root_post)(last_vote_time)
+             (post_bandwidth)(pending_claimed_accounts)
           )
 
 FC_REFLECT_DERIVED( steem::plugins::condenser_api::extended_account, (steem::plugins::condenser_api::api_account_object),
-            (average_bandwidth)(lifetime_bandwidth)(last_bandwidth_update)(average_market_bandwidth)(lifetime_market_bandwidth)(last_market_bandwidth_update)
             (vesting_balance)(reputation)(transfer_history)(market_history)(post_history)(vote_history)(other_history)(witness_votes)(tags_usage)(guest_bloggers)(open_orders)(comments)(feed)(blog)(recent_replies)(recommended) )
+
+FC_REFLECT( steem::plugins::condenser_api::api_comment_object,
+             (id)(author)(permlink)
+             (category)(parent_author)(parent_permlink)
+             (title)(body)(json_metadata)(last_update)(created)(active)(last_payout)
+             (depth)(children)
+             (net_rshares)(abs_rshares)(vote_rshares)
+             (children_abs_rshares)(cashout_time)(max_cashout_time)
+             (total_vote_weight)(reward_weight)(total_payout_value)(curator_payout_value)(author_rewards)(net_votes)
+             (root_author)(root_permlink)
+             (max_accepted_payout)(percent_steem_dollars)(allow_replies)(allow_votes)(allow_curation_rewards)
+             (beneficiaries)
+          )
 
 FC_REFLECT( steem::plugins::condenser_api::extended_dynamic_global_properties,
             (head_block_number)(head_block_id)(time)
@@ -1081,11 +1177,7 @@ FC_REFLECT( steem::plugins::condenser_api::extended_dynamic_global_properties,
             (total_reward_fund_steem)(total_reward_shares2)(pending_rewarded_vesting_shares)(pending_rewarded_vesting_steem)
             (sbd_interest_rate)(sbd_print_rate)
             (maximum_block_size)(current_aslot)(recent_slots_filled)(participation_count)(last_irreversible_block_num)(vote_power_reserve_rate)
-            (average_block_size)(current_reserve_ratio)(max_virtual_bandwidth) )
-
-FC_REFLECT( steem::plugins::condenser_api::legacy_chain_properties,
-            (account_creation_fee)(maximum_block_size)(sbd_interest_rate)
-          )
+            (delegation_return_period)(reverse_auction_seconds)(sbd_stop_percent)(sbd_start_percent) )
 
 FC_REFLECT( steem::plugins::condenser_api::api_witness_object,
              (id)
@@ -1098,6 +1190,7 @@ FC_REFLECT( steem::plugins::condenser_api::api_witness_object,
              (last_work)
              (running_version)
              (hardfork_version_vote)(hardfork_time_vote)
+             (available_witness_account_subsidies)
           )
 
 FC_REFLECT( steem::plugins::condenser_api::api_witness_schedule_object,
@@ -1106,7 +1199,7 @@ FC_REFLECT( steem::plugins::condenser_api::api_witness_schedule_object,
              (next_shuffle_block_num)
              (current_shuffled_witnesses)
              (num_scheduled_witnesses)
-             (top19_weight)
+             (elected_weight)
              (timeshare_weight)
              (miner_weight)
              (witness_pay_normalization_factor)
@@ -1116,6 +1209,9 @@ FC_REFLECT( steem::plugins::condenser_api::api_witness_schedule_object,
              (max_miner_witnesses)
              (max_runner_witnesses)
              (hardfork_required_witnesses)
+             (account_subsidy_rd)
+             (account_subsidy_witness_rd)
+             (min_witness_account_subsidy_decay)
           )
 
 FC_REFLECT( steem::plugins::condenser_api::api_feed_history_object,
@@ -1162,17 +1258,7 @@ FC_REFLECT( steem::plugins::condenser_api::api_vesting_delegation_expiration_obj
 FC_REFLECT( steem::plugins::condenser_api::api_convert_request_object,
              (id)(owner)(requestid)(amount)(conversion_date) )
 
-FC_REFLECT( steem::plugins::condenser_api::discussion,
-             (id)(author)(permlink)
-             (category)(parent_author)(parent_permlink)
-             (title)(body)(json_metadata)(last_update)(created)(active)(last_payout)
-             (depth)(children)
-             (net_rshares)(abs_rshares)(vote_rshares)
-             (children_abs_rshares)(cashout_time)(max_cashout_time)
-             (total_vote_weight)(reward_weight)(total_payout_value)(curator_payout_value)(author_rewards)(net_votes)
-             (root_author)(root_permlink)
-             (max_accepted_payout)(percent_steem_dollars)(allow_replies)(allow_votes)(allow_curation_rewards)
-             (beneficiaries)
+FC_REFLECT_DERIVED( steem::plugins::condenser_api::discussion, (steem::plugins::condenser_api::api_comment_object),
              (url)(root_title)(pending_payout_value)(total_pending_payout_value)
              (active_votes)(replies)(author_reputation)(promoted)
              (body_length)(reblogged_by)(first_reblogged_by)(first_reblogged_on)
@@ -1190,6 +1276,15 @@ FC_REFLECT_ENUM( steem::plugins::condenser_api::withdraw_route_type, (incoming)(
 
 FC_REFLECT( steem::plugins::condenser_api::get_version_return,
             (blockchain_version)(steem_revision)(fc_revision) )
+
+FC_REFLECT( steem::plugins::condenser_api::broadcast_transaction_synchronous_return,
+            (id)(block_num)(trx_num)(expired) )
+
+FC_REFLECT( steem::plugins::condenser_api::comment_feed_entry,
+            (comment)(reblog_by)(reblog_on)(entry_id) )
+
+FC_REFLECT( steem::plugins::condenser_api::comment_blog_entry,
+            (comment)(blog)(reblog_on)(entry_id) )
 
 FC_REFLECT( steem::plugins::condenser_api::ticker,
             (latest)(lowest_ask)(highest_bid)(percent_change)(steem_volume)(sbd_volume) )

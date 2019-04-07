@@ -1,7 +1,9 @@
 #pragma once
-
+#include <steem/chain/steem_fwd.hpp>
 #include <steem/plugins/chain/chain_plugin.hpp>
 #include <steem/plugins/p2p/p2p_plugin.hpp>
+#include <steem/plugins/rc/rc_plugin.hpp>
+#include <steem/plugins/witness/block_producer.hpp>
 
 #include <appbase/application.hpp>
 
@@ -34,7 +36,11 @@ namespace block_production_condition
 class witness_plugin : public appbase::plugin< witness_plugin >
 {
 public:
-   APPBASE_PLUGIN_REQUIRES((steem::plugins::chain::chain_plugin)(steem::plugins::p2p::p2p_plugin))
+   APPBASE_PLUGIN_REQUIRES(
+      (steem::plugins::chain::chain_plugin)
+      (steem::plugins::p2p::p2p_plugin)
+      (steem::plugins::rc::rc_plugin)
+   )
 
    witness_plugin();
    virtual ~witness_plugin();

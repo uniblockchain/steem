@@ -1,6 +1,10 @@
+
+#include <steem/chain/steem_fwd.hpp>
+
 #include <steem/plugins/follow/follow_plugin.hpp>
 #include <steem/plugins/follow/follow_objects.hpp>
 #include <steem/plugins/follow/follow_operations.hpp>
+#include <steem/plugins/follow/inc_performance.hpp>
 
 #include <steem/chain/util/impacted.hpp>
 
@@ -8,7 +12,6 @@
 
 #include <steem/chain/database.hpp>
 #include <steem/chain/index.hpp>
-#include <steem/chain/operation_notification.hpp>
 #include <steem/chain/account_object.hpp>
 #include <steem/chain/comment_object.hpp>
 
@@ -34,10 +37,10 @@ class follow_plugin_impl
       void pre_operation( const operation_notification& op_obj );
       void post_operation( const operation_notification& op_obj );
 
-      chain::database&     _db;
+      chain::database&              _db;
       follow_plugin&                _self;
-      boost::signals2::connection   pre_apply_connection;
-      boost::signals2::connection   post_apply_connection;
+      boost::signals2::connection   _pre_apply_operation_conn;
+      boost::signals2::connection   _post_apply_operation_conn;
 };
 
 struct pre_operation_visitor
@@ -62,7 +65,7 @@ struct pre_operation_visitor
          if( db.calculate_discussion_payout_time( c ) == fc::time_point_sec::maximum() ) return;
 
          const auto& cv_idx = db.get_index< comment_vote_index >().indices().get< by_comment_voter >();
-         auto cv = cv_idx.find( std::make_tuple( c.id, db.get_account( op.voter ).id ) );
+         auto cv = cv_idx.find( boost::make_tuple( c.id, db.get_account( op.voter ).id ) );
 
          if( cv != cv_idx.end() )
          {
@@ -135,8 +138,10 @@ struct post_operation_visitor
 {
    follow_plugin_impl& _plugin;
 
+   performance perf;
+
    post_operation_visitor( follow_plugin_impl& plugin )
-      : _plugin( plugin ) {}
+      : _plugin( plugin ), perf( plugin._db ) {}
 
    typedef void result_type;
 
@@ -186,9 +191,10 @@ struct post_operation_visitor
 
          const auto& idx = db.get_index< follow_index >().indices().get< by_following_follower >();
          const auto& comment_idx = db.get_index< feed_index >().indices().get< by_comment >();
+         const auto& old_feed_idx = db.get_index< feed_index >().indices().get< by_feed >();
          auto itr = idx.find( op.author );
 
-         const auto& feed_idx = db.get_index< feed_index >().indices().get< by_feed >();
+         performance_data pd;
 
          if( db.head_block_time() >= _plugin._self.start_feeds )
          {
@@ -196,15 +202,13 @@ struct post_operation_visitor
             {
                if( itr->what & ( 1 << blog ) )
                {
-                  uint32_t next_id = 0;
-                  auto last_feed = feed_idx.lower_bound( itr->follower );
+                  auto feed_itr = comment_idx.find( boost::make_tuple( c.id, itr->follower ) );
+                  bool is_empty = feed_itr == comment_idx.end();
 
-                  if( last_feed != feed_idx.end() && last_feed->account == itr->follower )
-                  {
-                     next_id = last_feed->account_feed_id + 1;
-                  }
+                  pd.init( c.id, is_empty );
+                  uint32_t next_id = perf.delete_old_objects< performance_data::t_creation_type::part_feed >( old_feed_idx, itr->follower, _plugin._self.max_feed_size, pd );
 
-                  if( comment_idx.find( boost::make_tuple( c.id, itr->follower ) ) == comment_idx.end() )
+                  if( pd.s.creation && is_empty )
                   {
                      db.create< feed_object >( [&]( feed_object& f )
                      {
@@ -212,33 +216,22 @@ struct post_operation_visitor
                         f.comment = c.id;
                         f.account_feed_id = next_id;
                      });
-
-                     const auto& old_feed_idx = db.get_index< feed_index >().indices().get< by_old_feed >();
-                     auto old_feed = old_feed_idx.lower_bound( itr->follower );
-
-                     while( old_feed->account == itr->follower && next_id - old_feed->account_feed_id > _plugin._self.max_feed_size )
-                     {
-                        db.remove( *old_feed );
-                        old_feed = old_feed_idx.lower_bound( itr->follower );
-                     }
                   }
-               }
 
+               }
                ++itr;
             }
          }
 
-         const auto& blog_idx = db.get_index< blog_index >().indices().get< by_blog >();
          const auto& comment_blog_idx = db.get_index< blog_index >().indices().get< by_comment >();
-         auto last_blog = blog_idx.lower_bound( op.author );
-         uint32_t next_id = 0;
+         auto blog_itr = comment_blog_idx.find( boost::make_tuple( c.id, op.author ) );
+         const auto& old_blog_idx = db.get_index< blog_index >().indices().get< by_blog >();
+         bool is_empty = blog_itr == comment_blog_idx.end();
 
-         if( last_blog != blog_idx.end() && last_blog->account == op.author )
-         {
-            next_id = last_blog->blog_feed_id + 1;
-         }
+         pd.init( c.id, is_empty );
+         uint32_t next_id = perf.delete_old_objects< performance_data::t_creation_type::full_blog >( old_blog_idx, op.author, _plugin._self.max_feed_size, pd );
 
-         if( comment_blog_idx.find( boost::make_tuple( c.id, op.author ) ) == comment_blog_idx.end() )
+         if( pd.s.creation && is_empty )
          {
             db.create< blog_object >( [&]( blog_object& b)
             {
@@ -246,15 +239,6 @@ struct post_operation_visitor
                b.comment = c.id;
                b.blog_feed_id = next_id;
             });
-
-            const auto& old_blog_idx = db.get_index< blog_index >().indices().get< by_old_blog >();
-            auto old_blog = old_blog_idx.lower_bound( op.author );
-
-            while( old_blog->account == op.author && next_id - old_blog->blog_feed_id > _plugin._self.max_feed_size )
-            {
-               db.remove( *old_blog );
-               old_blog = old_blog_idx.lower_bound( op.author );
-            }
          }
       }
       FC_LOG_AND_RETHROW()
@@ -358,17 +342,17 @@ void follow_plugin::plugin_initialize( const boost::program_options::variables_m
       my = std::make_unique< detail::follow_plugin_impl >( *this );
 
       // Each plugin needs its own evaluator registry.
-      _custom_operation_interpreter = std::make_shared< generic_custom_operation_interpreter< steem::plugins::follow::follow_plugin_operation > >( my->_db );
+      _custom_operation_interpreter = std::make_shared< generic_custom_operation_interpreter< steem::plugins::follow::follow_plugin_operation > >( my->_db, name() );
 
       // Add each operation evaluator to the registry
       _custom_operation_interpreter->register_evaluator< follow_evaluator >( this );
       _custom_operation_interpreter->register_evaluator< reblog_evaluator >( this );
 
       // Add the registry to the database so the database can delegate custom ops to the plugin
-      my->_db.set_custom_operation_interpreter( name(), _custom_operation_interpreter );
+      my->_db.register_custom_operation_interpreter( _custom_operation_interpreter );
 
-      my->pre_apply_connection = my->_db.pre_apply_operation.connect( 0, [&]( const operation_notification& o ){ my->pre_operation( o ); } );
-      my->post_apply_connection = my->_db.post_apply_operation.connect( 0, [&]( const operation_notification& o ){ my->post_operation( o ); } );
+      my->_pre_apply_operation_conn = my->_db.add_pre_apply_operation_handler( [&]( const operation_notification& note ){ my->pre_operation( note ); }, *this, 0 );
+      my->_post_apply_operation_conn = my->_db.add_post_apply_operation_handler( [&]( const operation_notification& note ){ my->post_operation( note ); }, *this, 0 );
       add_plugin_index< follow_index            >( my->_db );
       add_plugin_index< feed_index              >( my->_db );
       add_plugin_index< blog_index              >( my->_db );
@@ -376,17 +360,22 @@ void follow_plugin::plugin_initialize( const boost::program_options::variables_m
       add_plugin_index< follow_count_index      >( my->_db );
       add_plugin_index< blog_author_stats_index >( my->_db );
 
+      fc::mutable_variant_object state_opts;
 
       if( options.count( "follow-max-feed-size" ) )
       {
          uint32_t feed_size = options[ "follow-max-feed-size" ].as< uint32_t >();
          max_feed_size = feed_size;
+         state_opts[ "follow-max-feed-size" ] = feed_size;
       }
 
       if( options.count( "follow-start-feeds" ) )
       {
          start_feeds = fc::time_point_sec( options[ "follow-start-feeds" ].as< uint32_t >() );
+         state_opts[ "follow-start-feeds" ] = start_feeds;
       }
+
+      appbase::app().get_plugin< chain::chain_plugin >().report_state_options( name(), state_opts );
    }
    FC_CAPTURE_AND_RETHROW()
 }
@@ -395,8 +384,8 @@ void follow_plugin::plugin_startup() {}
 
 void follow_plugin::plugin_shutdown()
 {
-   chain::util::disconnect_signal( my->pre_apply_connection );
-   chain::util::disconnect_signal( my->post_apply_connection );
+   chain::util::disconnect_signal( my->_pre_apply_operation_conn );
+   chain::util::disconnect_signal( my->_post_apply_operation_conn );
 }
 
 } } } // steem::plugins::follow

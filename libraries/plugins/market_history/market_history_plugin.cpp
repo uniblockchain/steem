@@ -1,10 +1,15 @@
+
+#include <steem/chain/steem_fwd.hpp>
+
 #include <steem/plugins/market_history/market_history_plugin.hpp>
 
 #include <steem/chain/database.hpp>
 #include <steem/chain/index.hpp>
-#include <steem/chain/operation_notification.hpp>
 
 #include <fc/io/json.hpp>
+
+#define MH_BUCKET_SIZE "market-history-bucket-size"
+#define MH_BUCKETS_PER_SIZE "market-history-buckets-per-size"
 
 namespace steem { namespace plugins { namespace market_history {
 
@@ -23,15 +28,15 @@ class market_history_plugin_impl
        * This method is called as a callback after a block is applied
        * and will process/index all operations that were applied in the block.
        */
-      void update_market_histories( const operation_notification& o );
+      void on_post_apply_operation( const operation_notification& note );
 
       chain::database&     _db;
       flat_set<uint32_t>            _tracked_buckets = flat_set<uint32_t>  { 15, 60, 300, 3600, 86400 };
       int32_t                       _maximum_history_per_bucket_size = 1000;
-      boost::signals2::connection   post_apply_connection;
+      boost::signals2::connection   _post_apply_operation_conn;
 };
 
-void market_history_plugin_impl::update_market_histories( const operation_notification& o )
+void market_history_plugin_impl::on_post_apply_operation( const operation_notification& o )
 {
    if( o.op.which() == operation::tag< fill_order_operation >::value )
    {
@@ -151,9 +156,9 @@ void market_history_plugin::set_program_options(
 )
 {
    cfg.add_options()
-         ("market-history-bucket-size", boost::program_options::value<string>()->default_value("[15,60,300,3600,86400]"),
+         (MH_BUCKET_SIZE, boost::program_options::value<string>()->default_value("[15,60,300,3600,86400]"),
            "Track market history by grouping orders into buckets of equal size measured in seconds specified as a JSON array of numbers")
-         ("market-history-buckets-per-size", boost::program_options::value<uint32_t>()->default_value(5760),
+         (MH_BUCKETS_PER_SIZE, boost::program_options::value<uint32_t>()->default_value(5760),
            "How far back in time to track history for each bucket size, measured in the number of buckets (default: 5760)")
          ;
 }
@@ -165,20 +170,26 @@ void market_history_plugin::plugin_initialize( const boost::program_options::var
       ilog( "market_history: plugin_initialize() begin" );
       my = std::make_unique< detail::market_history_plugin_impl >();
 
-      my->post_apply_connection = my->_db.post_apply_operation.connect( 0, [&]( const operation_notification& o ){ my->update_market_histories( o ); } );
+      my->_post_apply_operation_conn = my->_db.add_post_apply_operation_handler( [&]( const operation_notification& note ){ my->on_post_apply_operation( note ); }, *this, 0 );
       add_plugin_index< bucket_index        >( my->_db );
       add_plugin_index< order_history_index >( my->_db );
 
-      if( options.count("bucket-size" ) )
-      {
-         std::string buckets = options["bucket-size"].as< string >();
-         my->_tracked_buckets = fc::json::from_string( buckets ).as< flat_set< uint32_t > >();
-      }
-      if( options.count("history-per-size" ) )
-         my->_maximum_history_per_bucket_size = options["history-per-size"].as< uint32_t >();
+      fc::mutable_variant_object state_opts;
 
-      wlog( "bucket-size ${b}", ("b", my->_tracked_buckets) );
-      wlog( "history-per-size ${h}", ("h", my->_maximum_history_per_bucket_size) );
+      if( options.count( MH_BUCKET_SIZE ) )
+      {
+         std::string buckets = options[MH_BUCKET_SIZE].as< string >();
+         my->_tracked_buckets = fc::json::from_string( buckets ).as< flat_set< uint32_t > >();
+         state_opts[MH_BUCKET_SIZE] = buckets;
+      }
+
+      if( options.count( MH_BUCKETS_PER_SIZE ) )
+      {
+         my->_maximum_history_per_bucket_size = options[MH_BUCKETS_PER_SIZE].as< uint32_t >();
+         state_opts[MH_BUCKETS_PER_SIZE] = my->_maximum_history_per_bucket_size;
+      }
+
+      appbase::app().get_plugin< chain::chain_plugin >().report_state_options( name(), state_opts );
 
       ilog( "market_history: plugin_initialize() end" );
    } FC_CAPTURE_AND_RETHROW()
@@ -188,7 +199,7 @@ void market_history_plugin::plugin_startup() {}
 
 void market_history_plugin::plugin_shutdown()
 {
-   chain::util::disconnect_signal( my->post_apply_connection );
+   chain::util::disconnect_signal( my->_post_apply_operation_conn );
 }
 
 flat_set< uint32_t > market_history_plugin::get_tracked_buckets() const

@@ -1,5 +1,6 @@
 #include <steem/plugins/debug_node/debug_node_plugin.hpp>
 
+#include <steem/plugins/witness/block_producer.hpp>
 #include <steem/chain/witness_objects.hpp>
 
 #include <fc/io/buffered_iostream.hpp>
@@ -25,7 +26,7 @@ class debug_node_plugin_impl
       virtual ~debug_node_plugin_impl();
 
       chain::database&                          _db;
-      boost::signals2::connection               applied_block_connection;
+      boost::signals2::connection               _post_apply_block_conn;
 };
 
 debug_node_plugin_impl::debug_node_plugin_impl() :
@@ -67,7 +68,8 @@ void debug_node_plugin::plugin_initialize( const variables_map& options )
    }
 
    // connect needed signals
-   my->applied_block_connection = my->_db.applied_block.connect( 0, [this](const chain::signed_block& b){ on_applied_block(b); });
+   my->_post_apply_block_conn = my->_db.add_post_apply_block_handler(
+      [this](const chain::block_notification& note){ on_post_apply_block(note); }, *this, 0 );
 }
 
 void debug_node_plugin::plugin_startup()
@@ -216,6 +218,7 @@ void debug_node_plugin::debug_generate_blocks(
    }
 
    chain::database& db = database();
+   witness::block_producer bp( db );
    uint32_t slot = args.miss_blocks+1, produced = 0;
    while( produced < args.count )
    {
@@ -246,7 +249,7 @@ void debug_node_plugin::debug_generate_blocks(
             break;
       }
 
-      db.generate_block( scheduled_time, scheduled_witness_name, *debug_private_key, args.skip );
+      bp.generate_block( scheduled_time, scheduled_witness_name, *debug_private_key, args.skip );
       ++produced;
       slot = new_slot;
    }
@@ -302,7 +305,7 @@ void debug_node_plugin::apply_debug_updates()
       update( db );
 }
 
-void debug_node_plugin::on_applied_block( const chain::signed_block& b )
+void debug_node_plugin::on_post_apply_block( const chain::block_notification& note )
 {
    try
    {
@@ -350,7 +353,7 @@ void debug_node_plugin::on_applied_block( const chain::signed_block& b )
 
 void debug_node_plugin::plugin_shutdown()
 {
-   chain::util::disconnect_signal( my->applied_block_connection );
+   chain::util::disconnect_signal( my->_post_apply_block_conn );
    /*if( _json_object_stream )
    {
       _json_object_stream->close();

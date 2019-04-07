@@ -79,36 +79,6 @@ namespace detail {
 
 using websocket_server_type = websocketpp::server< detail::asio_with_stub_log >;
 
-std::vector<fc::ip::endpoint> resolve_string_to_ip_endpoints( const std::string& endpoint_string )
-{
-   try
-   {
-      string::size_type colon_pos = endpoint_string.find( ':' );
-      if( colon_pos == std::string::npos )
-         FC_THROW( "Missing required port number in endpoint string \"${endpoint_string}\"",
-                  ("endpoint_string", endpoint_string) );
-
-      std::string port_string = endpoint_string.substr( colon_pos + 1 );
-
-      try
-      {
-         uint16_t port = boost::lexical_cast< uint16_t >( port_string );
-         std::string hostname = endpoint_string.substr( 0, colon_pos );
-         std::vector< fc::ip::endpoint > endpoints = fc::resolve( hostname, port );
-
-         if( endpoints.empty() )
-            FC_THROW_EXCEPTION( fc::unknown_host_exception, "The host name can not be resolved: ${hostname}", ("hostname", hostname) );
-
-         return endpoints;
-      }
-      catch( const boost::bad_lexical_cast& )
-      {
-         FC_THROW("Bad port: ${port}", ("port", port_string) );
-      }
-   }
-   FC_CAPTURE_AND_RETHROW( (endpoint_string) )
-}
-
 class webserver_plugin_impl
 {
    public:
@@ -162,7 +132,7 @@ void webserver_plugin_impl::start_webserver()
             if( http_endpoint && http_endpoint == ws_endpoint )
             {
                ws_server.set_http_handler( boost::bind( &webserver_plugin_impl::handle_http_message, this, &ws_server, _1 ) );
-               ilog( "start listending for http requests" );
+               ilog( "start listening for http requests" );
             }
 
             ilog( "start listening for ws requests" );
@@ -251,6 +221,24 @@ void webserver_plugin_impl::handle_ws_message( websocket_server_type* server, co
       {
          con->send( "error calling API " + e.to_string() );
       }
+      catch( ... )
+      {
+         auto eptr = std::current_exception();
+
+         try
+         {
+            if( eptr )
+               std::rethrow_exception( eptr );
+
+            con->send( "unknown error occurred" );
+         }
+         catch( const std::exception& e )
+         {
+            std::stringstream s;
+            s << "unknown exception: " << e.what();
+            con->send( s.str() );
+         }
+      }
    });
 }
 
@@ -266,6 +254,7 @@ void webserver_plugin_impl::handle_http_message( websocket_server_type* server, 
       try
       {
          con->set_body( api->call( body ) );
+         con->append_header( "Content-Type", "application/json" );
          con->set_status( websocketpp::http::status_code::ok );
       }
       catch( fc::exception& e )
@@ -273,6 +262,26 @@ void webserver_plugin_impl::handle_http_message( websocket_server_type* server, 
          edump( (e) );
          con->set_body( "Could not call API" );
          con->set_status( websocketpp::http::status_code::not_found );
+      }
+      catch( ... )
+      {
+         auto eptr = std::current_exception();
+
+         try
+         {
+            if( eptr )
+               std::rethrow_exception( eptr );
+
+            con->set_body( "unknown error occurred" );
+            con->set_status( websocketpp::http::status_code::internal_server_error );
+         }
+         catch( const std::exception& e )
+         {
+            std::stringstream s;
+            s << "unknown exception: " << e.what();
+            con->set_body( s.str() );
+            con->set_status( websocketpp::http::status_code::internal_server_error );
+         }
       }
 
       con->send_http_response();
@@ -305,7 +314,7 @@ void webserver_plugin::plugin_initialize( const variables_map& options )
    if( options.count( "webserver-http-endpoint" ) )
    {
       auto http_endpoint = options.at( "webserver-http-endpoint" ).as< string >();
-      auto endpoints = detail::resolve_string_to_ip_endpoints( http_endpoint );
+      auto endpoints = fc::resolve_string_to_ip_endpoints( http_endpoint );
       FC_ASSERT( endpoints.size(), "webserver-http-endpoint ${hostname} did not resolve", ("hostname", http_endpoint) );
       my->http_endpoint = tcp::endpoint( boost::asio::ip::address_v4::from_string( ( string )endpoints[0].get_address() ), endpoints[0].port() );
       ilog( "configured http to listen on ${ep}", ("ep", endpoints[0]) );
@@ -314,7 +323,7 @@ void webserver_plugin::plugin_initialize( const variables_map& options )
    if( options.count( "webserver-ws-endpoint" ) )
    {
       auto ws_endpoint = options.at( "webserver-ws-endpoint" ).as< string >();
-      auto endpoints = detail::resolve_string_to_ip_endpoints( ws_endpoint );
+      auto endpoints = fc::resolve_string_to_ip_endpoints( ws_endpoint );
       FC_ASSERT( endpoints.size(), "ws-server-endpoint ${hostname} did not resolve", ("hostname", ws_endpoint) );
       my->ws_endpoint = tcp::endpoint( boost::asio::ip::address_v4::from_string( ( string )endpoints[0].get_address() ), endpoints[0].port() );
       ilog( "configured ws to listen on ${ep}", ("ep", endpoints[0]) );
@@ -323,7 +332,7 @@ void webserver_plugin::plugin_initialize( const variables_map& options )
    if( options.count( "rpc-endpoint" ) )
    {
       auto endpoint = options.at( "rpc-endpoint" ).as< string >();
-      auto endpoints = detail::resolve_string_to_ip_endpoints( endpoint );
+      auto endpoints = fc::resolve_string_to_ip_endpoints( endpoint );
       FC_ASSERT( endpoints.size(), "rpc-endpoint ${hostname} did not resolve", ("hostname", endpoint) );
 
       auto tcp_endpoint = tcp::endpoint( boost::asio::ip::address_v4::from_string( ( string )endpoints[0].get_address() ), endpoints[0].port() );

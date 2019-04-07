@@ -29,7 +29,7 @@ optional< block_header > remote_node_api::get_block_header( uint32_t )
    FC_ASSERT( false );
 }
 
-optional< database_api::api_signed_block_object > remote_node_api::get_block( uint32_t )
+optional< condenser_api::legacy_signed_block > remote_node_api::get_block( uint32_t )
 {
    FC_ASSERT( false );
 }
@@ -49,7 +49,7 @@ condenser_api::extended_dynamic_global_properties remote_node_api::get_dynamic_g
    FC_ASSERT( false );
 }
 
-chain_properties remote_node_api::get_chain_properties()
+condenser_api::api_chain_properties remote_node_api::get_chain_properties()
 {
    FC_ASSERT( false );
 }
@@ -134,11 +134,6 @@ vector< database_api::api_withdraw_vesting_route_object > remote_node_api::get_w
    FC_ASSERT( false );
 }
 
-optional< witness::api_account_bandwidth_object > remote_node_api::get_account_bandwidth( account_name_type, witness::bandwidth_type )
-{
-   FC_ASSERT( false );
-}
-
 vector< condenser_api::api_savings_withdraw_object > remote_node_api::get_savings_withdraw_from( account_name_type )
 {
    FC_ASSERT( false );
@@ -189,32 +184,32 @@ uint64_t remote_node_api::get_witness_count()
    FC_ASSERT( false );
 }
 
-vector< condenser_api::extended_limit_order > remote_node_api::get_open_orders( account_name_type )
+vector< condenser_api::api_limit_order_object > remote_node_api::get_open_orders( account_name_type )
 {
    FC_ASSERT( false );
 }
 
-string remote_node_api::get_transaction_hex( signed_transaction )
+string remote_node_api::get_transaction_hex( condenser_api::legacy_signed_transaction )
 {
    FC_ASSERT( false );
 }
 
-annotated_signed_transaction remote_node_api::get_transaction( transaction_id_type )
+condenser_api::legacy_signed_transaction remote_node_api::get_transaction( transaction_id_type )
 {
    FC_ASSERT( false );
 }
 
-set< public_key_type > remote_node_api::get_required_signatures( signed_transaction, flat_set< public_key_type > )
+set< public_key_type > remote_node_api::get_required_signatures( condenser_api::legacy_signed_transaction, flat_set< public_key_type > )
 {
    FC_ASSERT( false );
 }
 
-set< public_key_type > remote_node_api::get_potential_signatures( signed_transaction )
+set< public_key_type > remote_node_api::get_potential_signatures( condenser_api::legacy_signed_transaction )
 {
    FC_ASSERT( false );
 }
 
-bool remote_node_api::verify_authority( signed_transaction )
+bool remote_node_api::verify_authority( condenser_api::legacy_signed_transaction )
 {
    FC_ASSERT( false );
 }
@@ -334,12 +329,12 @@ map< uint32_t, condenser_api::api_operation_object > remote_node_api::get_accoun
    FC_ASSERT( false );
 }
 
-void remote_node_api::broadcast_transaction( signed_transaction )
+void remote_node_api::broadcast_transaction( condenser_api::legacy_signed_transaction )
 {
    FC_ASSERT( false );
 }
 
-network_broadcast_api::broadcast_transaction_synchronous_return remote_node_api::broadcast_transaction_synchronous( signed_transaction )
+condenser_api::broadcast_transaction_synchronous_return remote_node_api::broadcast_transaction_synchronous( condenser_api::legacy_signed_transaction )
 {
    FC_ASSERT( false );
 }

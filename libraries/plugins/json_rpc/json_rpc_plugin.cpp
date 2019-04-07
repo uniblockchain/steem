@@ -1,6 +1,8 @@
 #include <steem/plugins/json_rpc/json_rpc_plugin.hpp>
 #include <steem/plugins/json_rpc/utility.hpp>
 
+#include <steem/plugins/statsd/utility.hpp>
+
 #include <boost/algorithm/string.hpp>
 
 #include <fc/log/logger_config.hpp>
@@ -76,7 +78,7 @@ namespace detail
          "  - validators:\n"
          "    - extract_test: {jsonpath_mini: \"error\", test: \"not_exists\"}\n"
          "    - extract_test: {jsonpath_mini: \"result\", test: \"exists\"}\n";
-         
+
          fc::ofstream o(file);
          o << head;
          o << "    - json_file_validator: {jsonpath_mini: \"result\", comparator: \"json_compare\", expected: {template: '" << dir_name << "/$test_id'}}\n\n";
@@ -98,7 +100,7 @@ namespace detail
          fc::path file(dir_name);
          bool error = response.error.valid();
          std::string counter_str;
-         
+
          if (error)
             counter_str = std::to_string(++errors) + "_error";
          else
@@ -124,7 +126,7 @@ namespace detail
       uint32_t counter = 0;
       uint32_t errors = 0;
    };
-      
+
    class json_rpc_plugin_impl
    {
       public:
@@ -134,7 +136,7 @@ namespace detail
          void add_api_method( const string& api_name, const string& method_name, const api_method& api, const api_method_signature& sig );
 
          api_method* find_api_method( std::string api, std::string method );
-         api_method* process_params( string method, const fc::variant_object& request, fc::variant& func_args );
+         api_method* process_params( string method, const fc::variant_object& request, fc::variant& func_args, string* method_name );
          void rpc_id( const fc::variant_object& request, json_rpc_response& response );
          void rpc_jsonrpc( const fc::variant_object& request, json_rpc_response& response );
          json_rpc_response rpc( const fc::variant& message );
@@ -146,7 +148,7 @@ namespace detail
             if (_logger)
                _logger->log(request, response);
          }
-            
+
          DECLARE_API(
             (get_methods)
             (get_signature) )
@@ -199,6 +201,7 @@ namespace detail
 
    api_method* json_rpc_plugin_impl::find_api_method( std::string api, std::string method )
    {
+      STATSD_START_TIMER( "jsonrpc", "overhead", "find_api_method", 1.0f );
       auto api_itr = _registered_apis.find( api );
       FC_ASSERT( api_itr != _registered_apis.end(), "Could not find API ${api}", ("api", api) );
 
@@ -208,8 +211,9 @@ namespace detail
       return &(method_itr->second);
    }
 
-   api_method* json_rpc_plugin_impl::process_params( string method, const fc::variant_object& request, fc::variant& func_args )
+   api_method* json_rpc_plugin_impl::process_params( string method, const fc::variant_object& request, fc::variant& func_args, string* method_name )
    {
+      STATSD_START_TIMER( "jsonrpc", "overhead", "process_params", 1.0f );
       api_method* ret = nullptr;
 
       if( method == "call" )
@@ -223,7 +227,12 @@ namespace detail
 
          FC_ASSERT( v.size() == 2 || v.size() == 3, "params should be {\"api\", \"method\", \"args\"" );
 
-         ret = find_api_method( v[0].as_string(), v[1].as_string() );
+         auto api = v[0].as_string();
+         auto method = v[1].as_string();
+
+         ret = find_api_method( api, method );
+
+         *method_name = api + "." + method;
 
          func_args = ( v.size() == 3 ) ? v[2] : fc::json::from_string( "{}" );
       }
@@ -236,6 +245,8 @@ namespace detail
 
          ret = find_api_method( v[0], v[1] );
 
+         *method_name = method;
+
          func_args = request.contains( "params" ) ? request[ "params" ] : fc::json::from_string( "{}" );
       }
 
@@ -244,6 +255,7 @@ namespace detail
 
    void json_rpc_plugin_impl::rpc_id( const fc::variant_object& request, json_rpc_response& response )
    {
+      STATSD_START_TIMER( "jsonrpc", "overhead", "rpc_id", 1.0f );
       if( request.contains( "id" ) )
       {
          const fc::variant& _id = request[ "id" ];
@@ -264,6 +276,7 @@ namespace detail
 
    void json_rpc_plugin_impl::rpc_jsonrpc( const fc::variant_object& request, json_rpc_response& response )
    {
+      STATSD_START_TIMER( "jsonrpc", "overhead", "rpc_jsonrpc", 1.0f );
       if( request.contains( "jsonrpc" ) && request[ "jsonrpc" ].is_string() && request[ "jsonrpc" ].as_string() == "2.0" )
       {
          if( request.contains( "method" ) && request[ "method" ].is_string() )
@@ -277,10 +290,11 @@ namespace detail
                {
                   fc::variant func_args;
                   api_method* call = nullptr;
+                  string method_name;
 
                   try
                   {
-                     call = process_params( method, request, func_args );
+                     call = process_params( method, request, func_args, &method_name );
                   }
                   catch( fc::assert_exception& e )
                   {
@@ -290,7 +304,10 @@ namespace detail
                   try
                   {
                      if( call )
+                     {
+                        STATSD_START_TIMER( "jsonrpc", "api", method_name, 1.0f );
                         response.result = (*call)( func_args );
+                     }
                   }
                   catch( chainbase::lock_exception& e )
                   {
@@ -329,6 +346,8 @@ namespace detail
       json_rpc_response response;
 
       ddump( (message) );
+
+      STATSD_START_TIMER( "jsonrpc", "overhead", "total", 1.0f );
 
       try
       {
@@ -408,7 +427,7 @@ void json_rpc_plugin::plugin_initialize( const variables_map& options )
          fc::remove_all(p);
       fc::create_directories(p);
       my->_logger.reset(new json_rpc_logger(dir_name));
-   }   
+   }
 }
 
 void json_rpc_plugin::plugin_startup()
@@ -425,6 +444,7 @@ void json_rpc_plugin::add_api_method( const string& api_name, const string& meth
 
 string json_rpc_plugin::call( const string& message )
 {
+   STATSD_START_TIMER( "jsonrpc", "overhead", "call", 1.0f );
    try
    {
       fc::variant v = fc::json::from_string( message );
@@ -460,6 +480,13 @@ string json_rpc_plugin::call( const string& message )
    {
       json_rpc_response response;
       response.error = json_rpc_error( JSON_RPC_SERVER_ERROR, e.to_string(), fc::variant( *(e.dynamic_copy_exception()) ) );
+      return fc::json::to_string( response );
+   }
+   catch( ... )
+   {
+      json_rpc_response response;
+      response.error = json_rpc_error( JSON_RPC_SERVER_ERROR, "Unknown exception", fc::variant(
+         fc::unhandled_exception( FC_LOG_MESSAGE( warn, "Unknown Exception" ), std::current_exception() ).to_detail_string() ) );
       return fc::json::to_string( response );
    }
 

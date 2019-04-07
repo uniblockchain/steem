@@ -44,8 +44,8 @@ namespace steem { namespace protocol {
             comment_options_operation,
             set_withdraw_vesting_route_operation,
             limit_order_create2_operation,
-            placeholder_a_operation,               // A new op can go here
-            placeholder_b_operation,               // A new op can go here
+            claim_account_operation,
+            create_claimed_account_operation,
             request_account_recovery_operation,
             recover_account_operation,
             change_recovery_account_operation,
@@ -62,15 +62,14 @@ namespace steem { namespace protocol {
             reset_account_operation,
             set_reset_account_operation,
             claim_reward_balance_operation,
-#ifdef STEEM_ENABLE_SMT
-            claim_reward_balance2_operation,
-#endif
             delegate_vesting_shares_operation,
             account_create_with_delegation_operation,
             witness_set_properties_operation,
 
 #ifdef STEEM_ENABLE_SMT
             /// SMT operations
+            claim_reward_balance2_operation,
+
             smt_setup_operation,
             smt_cap_reveal_operation,
             smt_refund_operation,
@@ -94,7 +93,8 @@ namespace steem { namespace protocol {
             comment_payout_update_operation,
             return_vesting_delegation_operation,
             comment_benefactor_reward_operation,
-            producer_reward_operation
+            producer_reward_operation,
+            clear_null_account_balance_operation
          > operation;
 
    /*void operation_get_required_authorities( const operation& op,

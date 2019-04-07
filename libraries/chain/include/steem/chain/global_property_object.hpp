@@ -1,4 +1,6 @@
 #pragma once
+#include <steem/chain/steem_fwd.hpp>
+
 #include <fc/uint128.hpp>
 
 #include <steem/chain/steem_object_types.hpp>
@@ -93,6 +95,15 @@ namespace steem { namespace chain {
          uint32_t     maximum_block_size = 0;
 
          /**
+          * The size of the block that is partitioned for actions.
+          * Required actions can only be delayed if they take up more than this amount. More can be
+          * included, but are not required. Block generation should only include transactions up
+          * to maximum_block_size - required_actions_parition_size to ensure required actions are
+          * not delayed when they should not be.
+          */
+         uint16_t     required_actions_partition_percent = 0;
+
+         /**
           * The current absolute slot number.  Equal to the total
           * number of slots since genesis.  Also equal to the total
           * number of missed slots plus head_block_number.
@@ -113,8 +124,17 @@ namespace steem { namespace chain {
           * their votes reduced.
           */
          uint32_t vote_power_reserve_rate = STEEM_INITIAL_VOTE_POWER_RATE;
+
+         uint32_t delegation_return_period = STEEM_DELEGATION_RETURN_PERIOD_HF0;
+
+         uint64_t reverse_auction_seconds = 0;
+
+         int64_t available_account_subsidies = 0;
+
+         uint16_t sbd_stop_percent = 0;
+         uint16_t sbd_start_percent = 0;
 #ifdef STEEM_ENABLE_SMT
-         asset smt_creation_fee = asset( 1000000, SBD_SYMBOL );
+         asset smt_creation_fee = asset( 1000, SBD_SYMBOL );
 #endif
    };
 
@@ -128,6 +148,14 @@ namespace steem { namespace chain {
    > dynamic_global_property_index;
 
 } } // steem::chain
+
+#ifdef ENABLE_STD_ALLOCATOR
+namespace mira {
+
+template<> struct is_static_length< steem::chain::dynamic_global_property_object > : public boost::true_type {};
+
+} // mira
+#endif
 
 FC_REFLECT( steem::chain::dynamic_global_property_object,
              (id)
@@ -151,11 +179,17 @@ FC_REFLECT( steem::chain::dynamic_global_property_object,
              (sbd_interest_rate)
              (sbd_print_rate)
              (maximum_block_size)
+             (required_actions_partition_percent)
              (current_aslot)
              (recent_slots_filled)
              (participation_count)
              (last_irreversible_block_num)
              (vote_power_reserve_rate)
+             (delegation_return_period)
+             (reverse_auction_seconds)
+             (available_account_subsidies)
+             (sbd_stop_percent)
+             (sbd_start_percent)
 #ifdef STEEM_ENABLE_SMT
              (smt_creation_fee)
 #endif

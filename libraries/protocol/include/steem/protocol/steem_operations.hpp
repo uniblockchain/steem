@@ -9,6 +9,8 @@
 
 namespace steem { namespace protocol {
 
+   void validate_auth_size( const authority& a );
+
    struct account_create_operation : public base_operation
    {
       asset             fee;
@@ -150,7 +152,7 @@ namespace steem { namespace protocol {
                *max_accepted_payout = foundI->second.get<votable_asset_info_v1>().max_accepted_payout;
             if(allow_curation_rewards != nullptr)
                *allow_curation_rewards = foundI->second.get<votable_asset_info_v1>().allow_curation_rewards;
-            
+
             return true;
          }
 
@@ -202,14 +204,30 @@ namespace steem { namespace protocol {
    };
 
 
-   struct placeholder_a_operation : public base_operation
+   struct claim_account_operation : public base_operation
    {
-      void validate()const;
+      account_name_type creator;
+      asset             fee;
+      extensions_type   extensions;
+
+      void get_required_active_authorities( flat_set< account_name_type >& a ) const { a.insert( creator ); }
+      void validate() const;
    };
 
-   struct placeholder_b_operation : public base_operation
+
+   struct create_claimed_account_operation : public base_operation
    {
-      void validate()const;
+      account_name_type creator;
+      account_name_type new_account_name;
+      authority         owner;
+      authority         active;
+      authority         posting;
+      public_key_type   memo_key;
+      string            json_metadata;
+      extensions_type   extensions;
+
+      void get_required_active_authorities( flat_set< account_name_type >& a ) const { a.insert( creator ); }
+      void validate() const;
    };
 
 
@@ -253,8 +271,7 @@ namespace steem { namespace protocol {
       string            memo;
 
       void              validate()const;
-      void get_required_active_authorities( flat_set<account_name_type>& a )const{ if(amount.symbol != VESTS_SYMBOL) a.insert(from); }
-      void get_required_owner_authorities( flat_set<account_name_type>& a )const { if(amount.symbol == VESTS_SYMBOL) a.insert(from); }
+      void get_required_active_authorities( flat_set<account_name_type>& a )const{ a.insert(from); }
    };
 
 
@@ -364,16 +381,15 @@ namespace steem { namespace protocol {
 
 
    /**
-    *  This operation converts STEEM into VFS (Vesting Fund Shares) at
-    *  the current exchange rate. With this operation it is possible to
-    *  give another account vesting shares so that faucets can
-    *  pre-fund new accounts with vesting shares.
+    *  This operation converts liquid token (STEEM or liquid SMT) into VFS (Vesting Fund Shares,
+    *  VESTS or vesting SMT) at the current exchange rate. With this operation it is possible to
+    *  give another account vesting shares so that faucets can pre-fund new accounts with vesting shares.
     */
    struct transfer_to_vesting_operation : public base_operation
    {
       account_name_type from;
-      account_name_type to; ///< if null, then same as from
-      asset             amount; ///< must be STEEM
+      account_name_type to;      ///< if null, then same as from
+      asset             amount;  ///< must be STEEM or liquid variant of SMT
 
       void validate()const;
       void get_required_active_authorities( flat_set<account_name_type>& a )const{ a.insert(from); }
@@ -555,7 +571,7 @@ namespace steem { namespace protocol {
    {
       flat_set< account_name_type > required_auths;
       flat_set< account_name_type > required_posting_auths;
-      string                        id; ///< must be less than 32 characters long
+      custom_id_type                id; ///< must be less than 32 characters long
       string                        json; ///< must be proper utf8 / JSON string.
 
       void validate()const;
@@ -571,7 +587,7 @@ namespace steem { namespace protocol {
       flat_set< account_name_type > required_posting_auths;
       vector< authority >           required_auths;
 
-      string                        id; ///< must be less than 32 characters long
+      custom_id_type                id; ///< must be less than 32 characters long
       vector< char >                data;
 
       void validate()const;
@@ -1127,8 +1143,8 @@ FC_REFLECT( steem::protocol::escrow_transfer_operation, (from)(to)(sbd_amount)(s
 FC_REFLECT( steem::protocol::escrow_approve_operation, (from)(to)(agent)(who)(escrow_id)(approve) );
 FC_REFLECT( steem::protocol::escrow_dispute_operation, (from)(to)(agent)(who)(escrow_id) );
 FC_REFLECT( steem::protocol::escrow_release_operation, (from)(to)(agent)(who)(receiver)(escrow_id)(sbd_amount)(steem_amount) );
-FC_REFLECT( steem::protocol::placeholder_a_operation, );
-FC_REFLECT( steem::protocol::placeholder_b_operation, );
+FC_REFLECT( steem::protocol::claim_account_operation, (creator)(fee)(extensions) );
+FC_REFLECT( steem::protocol::create_claimed_account_operation, (creator)(new_account_name)(owner)(active)(posting)(memo_key)(json_metadata)(extensions) );
 FC_REFLECT( steem::protocol::request_account_recovery_operation, (recovery_account)(account_to_recover)(new_owner_authority)(extensions) );
 FC_REFLECT( steem::protocol::recover_account_operation, (account_to_recover)(new_owner_authority)(recent_owner_authority)(extensions) );
 FC_REFLECT( steem::protocol::change_recovery_account_operation, (account_to_recover)(new_recovery_account)(extensions) );

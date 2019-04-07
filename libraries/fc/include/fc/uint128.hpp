@@ -100,6 +100,12 @@ namespace fc
       uint32_t low_32_bits()const { return (uint32_t) lo; }
       uint64_t low_bits()const  { return lo; }
       uint64_t high_bits()const { return hi; }
+      int64_t to_int64()const
+      {
+          FC_ASSERT( hi == 0 );
+          FC_ASSERT( lo <= uint64_t( std::numeric_limits<int64_t>::max() ) );
+          return int64_t(lo);
+      }
 
       static uint128 max_value() {
           const uint64_t max64 = std::numeric_limits<uint64_t>::max();
@@ -128,7 +134,7 @@ namespace fc
     template<typename Stream>
     inline void pack( Stream& s, const uint128& u ) { s.write( (char*)&u, sizeof(u) ); }
     template<typename Stream>
-    inline void unpack( Stream& s, uint128& u ) { s.read( (char*)&u, sizeof(u) ); }
+    inline void unpack( Stream& s, uint128& u, uint32_t ) { s.read( (char*)&u, sizeof(u) ); }
   }
 
   size_t city_hash_size_t(const char *buf, size_t len);

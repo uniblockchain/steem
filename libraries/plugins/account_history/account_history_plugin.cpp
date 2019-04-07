@@ -4,7 +4,6 @@
 
 #include <steem/protocol/config.hpp>
 
-#include <steem/chain/operation_notification.hpp>
 #include <steem/chain/history_object.hpp>
 
 #include <steem/utilities/plugin_utilities.hpp>
@@ -35,7 +34,7 @@ class account_history_plugin_impl
 
       virtual ~account_history_plugin_impl() {}
 
-      void on_operation( const operation_notification& note );
+      void on_pre_apply_operation( const operation_notification& note );
 
       flat_map< account_name_type, account_name_type > _tracked_accounts;
       bool                                             _filter_content = false;
@@ -43,7 +42,7 @@ class account_history_plugin_impl
       flat_set< string >                               _op_list;
       bool                                             _prune = true;
       database&                        _db;
-      boost::signals2::connection      pre_apply_connection;
+      boost::signals2::connection      _pre_apply_operation_conn;
 };
 
 struct operation_visitor
@@ -146,7 +145,7 @@ struct operation_visitor_filter : operation_visitor
    }
 };
 
-void account_history_plugin_impl::on_operation( const operation_notification& note )
+void account_history_plugin_impl::on_pre_apply_operation( const operation_notification& note )
 {
    flat_set<account_name_type> impacted;
 
@@ -220,7 +219,8 @@ void account_history_plugin::plugin_initialize( const boost::program_options::va
 {
    my = std::make_unique< detail::account_history_plugin_impl >();
 
-   my->pre_apply_connection = my->_db.pre_apply_operation.connect( 0, [&]( const operation_notification& note ){ my->on_operation(note); } );
+   my->_pre_apply_operation_conn = my->_db.add_pre_apply_operation_handler(
+      [&]( const operation_notification& note ){ my->on_pre_apply_operation(note); }, *this, 0 );
 
    typedef pair< account_name_type, account_name_type > pairstring;
    STEEM_LOAD_VALUE_SET(options, "account-history-track-account-range", my->_tracked_accounts, pairstring);
@@ -231,6 +231,12 @@ void account_history_plugin::plugin_initialize( const boost::program_options::va
       STEEM_LOAD_VALUE_SET( options, "track-account-range", my->_tracked_accounts, pairstring );
    }
 
+   fc::mutable_variant_object state_opts;
+
+   if( my->_tracked_accounts.size() )
+   {
+      state_opts["account-history-track-account-range"] = my->_tracked_accounts;
+   }
 
    if( options.count( "account-history-whitelist-ops" ) || options.count( "history-whitelist-ops" ) )
    {
@@ -267,6 +273,11 @@ void account_history_plugin::plugin_initialize( const boost::program_options::va
                   my->_op_list.insert( STEEM_NAMESPACE_PREFIX + op );
             }
          }
+      }
+
+      if( my->_op_list.size() )
+      {
+         state_opts["account-history-whitelist-ops"] = my->_op_list;
       }
 
       ilog( "Account History: whitelisting ops ${o}", ("o", my->_op_list) );
@@ -308,6 +319,11 @@ void account_history_plugin::plugin_initialize( const boost::program_options::va
          }
       }
 
+      if( my->_op_list.size() )
+      {
+         state_opts["account-history-blacklist-ops"] = my->_op_list;
+      }
+
       ilog( "Account History: blacklisting ops ${o}", ("o", my->_op_list) );
    }
 
@@ -315,13 +331,16 @@ void account_history_plugin::plugin_initialize( const boost::program_options::va
    {
       my->_prune = !options[ "history-disable-pruning" ].as< bool >();
    }
+   state_opts["history-disable-pruning"] = my->_prune;
+
+   appbase::app().get_plugin< chain::chain_plugin >().report_state_options( name(), state_opts );
 }
 
 void account_history_plugin::plugin_startup() {}
 
 void account_history_plugin::plugin_shutdown()
 {
-   chain::util::disconnect_signal( my->pre_apply_connection );
+   chain::util::disconnect_signal( my->_pre_apply_operation_conn );
 }
 
 flat_map< account_name_type, account_name_type > account_history_plugin::tracked_accounts() const

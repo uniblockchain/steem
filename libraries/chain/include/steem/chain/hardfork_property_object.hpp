@@ -1,4 +1,5 @@
 #pragma once
+#include <steem/chain/steem_fwd.hpp>
 
 #include <steem/protocol/version.hpp>
 
@@ -6,19 +7,25 @@
 
 namespace steem { namespace chain {
 
+   using chainbase::t_vector;
+
    class hardfork_property_object : public object< hardfork_property_object_type, hardfork_property_object >
    {
+      STEEM_STD_ALLOCATOR_CONSTRUCTOR( hardfork_property_object )
+
       public:
          template< typename Constructor, typename Allocator >
          hardfork_property_object( Constructor&& c, allocator< Allocator > a )
-            :processed_hardforks( a.get_segment_manager() )
+            :processed_hardforks( a )
          {
             c( *this );
          }
 
          id_type                                                              id;
 
-         bip::vector< fc::time_point_sec, allocator< fc::time_point_sec > >   processed_hardforks;
+         using t_processed_hardforks = t_vector< fc::time_point_sec >;
+
+         t_processed_hardforks                                                processed_hardforks;
          uint32_t                                                             last_hardfork = 0;
          protocol::hardfork_version                                           current_hardfork_version;
          protocol::hardfork_version                                           next_hardfork;
@@ -28,7 +35,7 @@ namespace steem { namespace chain {
    typedef multi_index_container<
       hardfork_property_object,
       indexed_by<
-         ordered_unique< member< hardfork_property_object, hardfork_property_object::id_type, &hardfork_property_object::id > >
+         ordered_unique< tag< by_id >, member< hardfork_property_object, hardfork_property_object::id_type, &hardfork_property_object::id > >
       >,
       allocator< hardfork_property_object >
    > hardfork_property_index;

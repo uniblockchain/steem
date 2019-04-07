@@ -77,7 +77,7 @@ inline void pack( Stream& s, const steem::protocol::legacy_steem_asset_symbol_ty
 }
 
 template< typename Stream >
-inline void unpack( Stream& s, steem::protocol::legacy_steem_asset_symbol_type& sym )
+inline void unpack( Stream& s, steem::protocol::legacy_steem_asset_symbol_type& sym, uint32_t depth )
 {
    //  994240:        "account_creation_fee": "0.1 STEEM"
    // 1021529:        "account_creation_fee": "10.0 STEEM"
@@ -87,10 +87,10 @@ inline void unpack( Stream& s, steem::protocol::legacy_steem_asset_symbol_type& 
    // 4338089:        "account_creation_fee": "0.001 0.001"
    // 4626205:        "account_creation_fee": "6.000 6.000"
    // 4632595:        "account_creation_fee": "6.000 6.000"
-
+   depth++;
    uint64_t ser = 0;
 
-   fc::raw::unpack( s, ser );
+   fc::raw::unpack( s, ser, depth );
    switch( ser )
    {
       case STEEM_SYMBOL_LEGACY_SER_1:
@@ -120,6 +120,15 @@ inline void from_variant( const fc::variant& v, steem::protocol::legacy_steem_as
    from_variant( v, a );
    leg = steem::protocol::legacy_steem_asset::from_asset( a );
 }
+
+template<>
+struct get_typename< steem::protocol::legacy_steem_asset_symbol_type >
+{
+   static const char* name()
+   {
+      return "steem::protocol::legacy_steem_asset_symbol_type";
+   }
+};
 
 } // fc
 

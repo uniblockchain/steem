@@ -26,11 +26,11 @@ struct remote_node_api
    condenser_api::state get_state( string );
    vector< account_name_type > get_active_witnesses();
    optional< block_header > get_block_header( uint32_t );
-   optional< database_api::api_signed_block_object > get_block( uint32_t );
+   optional< condenser_api::legacy_signed_block > get_block( uint32_t );
    vector< condenser_api::api_operation_object > get_ops_in_block( uint32_t, bool only_virtual = true );
    fc::variant_object get_config();
    condenser_api::extended_dynamic_global_properties get_dynamic_global_properties();
-   chain_properties get_chain_properties();
+   condenser_api::api_chain_properties get_chain_properties();
    condenser_api::legacy_price get_current_median_history_price();
    condenser_api::api_feed_history_object get_feed_history();
    condenser_api::api_witness_schedule_object get_witness_schedule();
@@ -47,7 +47,6 @@ struct remote_node_api
    optional< database_api::api_account_recovery_request_object > get_recovery_request( account_name_type );
    optional< condenser_api::api_escrow_object > get_escrow( account_name_type, uint32_t );
    vector< database_api::api_withdraw_vesting_route_object > get_withdraw_routes( account_name_type, condenser_api::withdraw_route_type );
-   optional< witness::api_account_bandwidth_object > get_account_bandwidth( account_name_type, witness::bandwidth_type );
    vector< condenser_api::api_savings_withdraw_object > get_savings_withdraw_from( account_name_type );
    vector< condenser_api::api_savings_withdraw_object > get_savings_withdraw_to( account_name_type );
    vector< condenser_api::api_vesting_delegation_object > get_vesting_delegations( account_name_type, account_name_type, uint32_t );
@@ -58,12 +57,12 @@ struct remote_node_api
    vector< condenser_api::api_witness_object > get_witnesses_by_vote( account_name_type, uint32_t );
    vector< account_name_type > lookup_witness_accounts( string, uint32_t );
    uint64_t get_witness_count();
-   vector< condenser_api::extended_limit_order > get_open_orders( account_name_type );
-   string get_transaction_hex( signed_transaction );
-   annotated_signed_transaction get_transaction( transaction_id_type );
-   set< public_key_type > get_required_signatures( signed_transaction, flat_set< public_key_type > );
-   set< public_key_type > get_potential_signatures( signed_transaction );
-   bool verify_authority( signed_transaction );
+   vector< condenser_api::api_limit_order_object > get_open_orders( account_name_type );
+   string get_transaction_hex( condenser_api::legacy_signed_transaction );
+   condenser_api::legacy_signed_transaction get_transaction( transaction_id_type );
+   set< public_key_type > get_required_signatures( condenser_api::legacy_signed_transaction, flat_set< public_key_type > );
+   set< public_key_type > get_potential_signatures( condenser_api::legacy_signed_transaction );
+   bool verify_authority( condenser_api::legacy_signed_transaction );
    bool verify_account_authority( string, flat_set< public_key_type > );
    vector< tags::vote_state > get_active_votes( account_name_type, string );
    vector< condenser_api::account_vote > get_account_votes( account_name_type );
@@ -87,8 +86,8 @@ struct remote_node_api
    vector< condenser_api::discussion > get_replies_by_last_update( tags::discussion_query );
    vector< condenser_api::discussion > get_discussions_by_author_before_date( tags::discussion_query );
    map< uint32_t, condenser_api::api_operation_object > get_account_history( account_name_type, uint64_t, uint32_t );
-   void broadcast_transaction( signed_transaction );
-   network_broadcast_api::broadcast_transaction_synchronous_return broadcast_transaction_synchronous( signed_transaction );
+   void broadcast_transaction( condenser_api::legacy_signed_transaction );
+   condenser_api::broadcast_transaction_synchronous_return broadcast_transaction_synchronous( condenser_api::legacy_signed_transaction );
    void broadcast_block( signed_block );
    vector< follow::api_follow_object > get_followers( account_name_type, account_name_type, follow::follow_type, uint32_t );
    vector< follow::api_follow_object > get_following( account_name_type, account_name_type, follow::follow_type, uint32_t );
@@ -138,7 +137,6 @@ FC_API( steem::wallet::remote_node_api,
         (get_recovery_request)
         (get_escrow)
         (get_withdraw_routes)
-        (get_account_bandwidth)
         (get_savings_withdraw_from)
         (get_savings_withdraw_to)
         (get_vesting_delegations)

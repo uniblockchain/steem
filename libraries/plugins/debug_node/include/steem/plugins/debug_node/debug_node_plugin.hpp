@@ -1,5 +1,6 @@
 
 #pragma once
+#include <steem/chain/steem_fwd.hpp>
 #include <steem/plugins/chain/chain_plugin.hpp>
 
 #include <fc/variant_object.hpp>
@@ -12,6 +13,10 @@
 namespace steem { namespace protocol {
    struct pow2;
    struct signed_block;
+} }
+
+namespace steem { namespace chain {
+   struct block_notification;
 } }
 
 namespace steem { namespace plugins { namespace debug_node {
@@ -98,7 +103,7 @@ class debug_node_plugin : public plugin< debug_node_plugin >
       bool logging = true;
 
    private:
-      void on_applied_block( const protocol::signed_block& b );
+      void on_post_apply_block( const steem::chain::block_notification& note );
 
       void apply_debug_updates();
 
@@ -107,9 +112,8 @@ class debug_node_plugin : public plugin< debug_node_plugin >
       std::shared_ptr< detail::debug_node_plugin_impl > my;
 
       //std::shared_ptr< std::ofstream > _json_object_stream;
-      boost::signals2::scoped_connection _applied_block_conn;
-      boost::signals2::scoped_connection _changed_objects_conn;
-      boost::signals2::scoped_connection _removed_objects_conn;
+      //boost::signals2::scoped_connection _changed_objects_conn;
+      //boost::signals2::scoped_connection _removed_objects_conn;
 
       std::vector< std::string > _edit_scripts;
       //std::map< protocol::block_id_type, std::vector< fc::variant_object > > _debug_updates;
